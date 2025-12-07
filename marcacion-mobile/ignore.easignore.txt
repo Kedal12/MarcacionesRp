@@ -1,0 +1,12 @@
+# Ignorar caché de Visual Studio
+.vs
+MarcacionAPI/.vs
+
+# Ignorar binarios del backend
+MarcacionAPI/bin
+MarcacionAPI/obj
+MarcacionAPI/**/bin
+MarcacionAPI/**/obj
+
+# (Opcional) Ignorar la solución de backend completa si quieres
+MarcacionAPI/**
