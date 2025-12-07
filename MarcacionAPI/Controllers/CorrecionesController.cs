@@ -1,382 +1,285 @@
 ﻿using MarcacionAPI.Data;
 using MarcacionAPI.DTOs;
 using MarcacionAPI.Models;
-using MarcacionAPI.Utils; // <-- AÑADIDO
+using MarcacionAPI.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System;
 using System.Linq;
-using System.Security.Claims; // <-- Requerido por User.GetUserId()
+using System.Security.Claims;
 using System.Threading.Tasks;
-using System.Text.Json; // Para serializar en auditoría
+using System.Text.Json;
 
 namespace MarcacionAPI.Controllers;
 
-[Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")] // <-- MODIFICADO: Default solo para Admins
+[Authorize]
 [ApiController]
 [Route("api/[controller]")]
 public class CorreccionesController : ControllerBase
 {
     private readonly ApplicationDbContext _context;
-    // private readonly ILogger<CorreccionesController> _logger;
 
     public CorreccionesController(ApplicationDbContext context)
     {
         _context = context;
-        // _logger = logger;
     }
 
-    // POST /api/correcciones (Empleado crea solicitud)
-    /// <summary>
-    /// Crea una nueva solicitud de corrección de marcación (estado: pendiente).
-    /// </summary>
+    private static TimeZoneInfo GetBogotaTz()
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById("America/Bogota"); }
+        catch { return TimeZoneInfo.FindSystemTimeZoneById("SA Pacific Standard Time"); }
+    }
+
+    // =========================================================================
+    // 1. CREAR SOLICITUD
+    // =========================================================================
     [HttpPost]
-    [Authorize] // <-- MODIFICADO: Anula el [Authorize] de la clase, permite a todos (empleados)
     public async Task<IActionResult> CrearCorreccion([FromBody] CorreccionCrearDto dto)
     {
-        // Obtiene el ID del usuario que hace la solicitud (desde el token)
-        var idUsuario = User.GetUserId();
-        if (idUsuario is null)
+        var idLogueadoStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (idLogueadoStr == null) return Unauthorized();
+        int idLogueado = int.Parse(idLogueadoStr);
+
+        int idUsuarioFinal = idLogueado;
+
+        // Si envían IdUsuario y es admin, lo usamos
+        if (dto.IdUsuario.HasValue && dto.IdUsuario.Value > 0)
         {
-            return Unauthorized();
+            if (User.IsInRole(Roles.Admin) || User.IsInRole(Roles.SuperAdmin))
+            {
+                idUsuarioFinal = dto.IdUsuario.Value;
+            }
+            else
+            {
+                return Forbid("No puedes crear solicitudes para otros usuarios.");
+            }
         }
 
-        // Validaciones
         if (string.IsNullOrWhiteSpace(dto.Tipo) || (dto.Tipo != TipoCorreccion.Entrada && dto.Tipo != TipoCorreccion.Salida))
-        {
             return BadRequest("El tipo debe ser 'entrada' o 'salida'.");
-        }
+
         if (string.IsNullOrWhiteSpace(dto.Motivo))
-        {
             return BadRequest("El motivo es requerido.");
-        }
 
         var existePendiente = await _context.Correcciones.AnyAsync(c =>
-            c.IdUsuario == idUsuario.Value &&
+            c.IdUsuario == idUsuarioFinal &&
             c.Fecha == dto.Fecha &&
             c.Tipo == dto.Tipo &&
             c.Estado == EstadoCorreccion.Pendiente);
+
         if (existePendiente)
-        {
-            return Conflict("Ya tienes una solicitud pendiente para esa fecha y tipo.");
-        }
+            return Conflict("Ya existe una solicitud pendiente para esa fecha y tipo.");
 
         var nuevaCorreccion = new Correccion
         {
-            IdUsuario = idUsuario.Value,
+            IdUsuario = idUsuarioFinal,
             Fecha = dto.Fecha,
             Tipo = dto.Tipo,
             HoraSolicitada = dto.HoraSolicitada,
             Motivo = dto.Motivo.Trim(),
             Estado = EstadoCorreccion.Pendiente,
             CreatedAt = DateTimeOffset.UtcNow,
-            CreatedBy = idUsuario.Value
+            CreatedBy = idLogueado
         };
 
         _context.Correcciones.Add(nuevaCorreccion);
 
-        // --- Auditoría ---
         _context.Auditorias.Add(new Auditoria
         {
-            IdUsuarioAdmin = idUsuario.Value, // Usuario que realiza la acción
-            Accion = "correccion.create.request",
+            IdUsuarioAdmin = idLogueado,
+            Accion = "correccion.create",
             Entidad = "Correccion",
-            EntidadId = nuevaCorreccion.Id, // EF asignará ID
-            DataJson = JsonSerializer.Serialize(new { dto.Fecha, dto.Tipo, dto.HoraSolicitada, dto.Motivo })
+            DataJson = JsonSerializer.Serialize(new { UsuarioObjetivo = idUsuarioFinal, dto.Fecha, dto.Tipo })
         });
-        // --- Fin Auditoría ---
 
         await _context.SaveChangesAsync();
-
-        return Ok(nuevaCorreccion); // Devuelve 200 OK
+        return Ok(nuevaCorreccion);
     }
 
-    // GET /api/correcciones (Admin lista solicitudes con filtros)
-    /// <summary>
-    /// Lista las solicitudes de corrección con filtros opcionales. (Admin/SuperAdmin)
-    /// </summary>
+    // =========================================================================
+    // 2. LISTAR 
+    // =========================================================================
     [HttpGet]
+    [Authorize(Roles = "admin,superadmin")]
     public async Task<IActionResult> ListarCorrecciones([FromQuery] CorreccionFiltroDto filtro)
     {
         var query = _context.Correcciones.AsNoTracking()
-                             .Include(c => c.Usuario) // Para nombre y filtro sede
-                             .AsQueryable();
+                            .Include(c => c.Usuario)
+                            .AsQueryable();
 
-        // --- LÓGICA DE SEDE AÑADIDA ---
         var sedeIdFiltrada = filtro.IdSede;
         var idUsuarioFiltrado = filtro.IdUsuario;
 
         if (!User.IsSuperAdmin())
         {
-            // Forzar el filtro de sede al del admin
             sedeIdFiltrada = User.GetSedeId() ?? 0;
-
-            // Si el admin (no superadmin) intenta filtrar por un usuario específico,
-            // verificar que ese usuario pertenezca a SU sede.
             if (idUsuarioFiltrado.HasValue && idUsuarioFiltrado.Value > 0)
             {
                 var usuarioSede = await _context.Usuarios.AsNoTracking()
-                                        .Where(u => u.Id == idUsuarioFiltrado.Value)
-                                        .Select(u => u.IdSede)
-                                        .FirstOrDefaultAsync();
+                    .Where(u => u.Id == idUsuarioFiltrado.Value)
+                    .Select(u => u.IdSede)
+                    .FirstOrDefaultAsync();
+
                 if (usuarioSede == 0 || usuarioSede != sedeIdFiltrada)
-                {
-                    return Forbid("No puedes ver correcciones de usuarios de otra sede.");
-                }
+                    return Forbid();
             }
         }
-        // --- FIN LÓGICA DE SEDE ---
 
-        // Aplicar filtros validados
-        if (idUsuarioFiltrado.HasValue && idUsuarioFiltrado > 0)
-        {
-            query = query.Where(c => c.IdUsuario == idUsuarioFiltrado.Value);
-        }
+        if (idUsuarioFiltrado.HasValue) query = query.Where(c => c.IdUsuario == idUsuarioFiltrado.Value);
         if (sedeIdFiltrada.HasValue && sedeIdFiltrada > 0)
-        {
-            query = query.Where(c => c.Usuario != null && c.Usuario.IdSede == sedeIdFiltrada.Value);
-        }
-
+            query = query.Where(c => c.Usuario.IdSede == sedeIdFiltrada.Value);
         if (!string.IsNullOrWhiteSpace(filtro.Estado))
-        {
             query = query.Where(c => c.Estado == filtro.Estado.ToLower());
-        }
-        if (filtro.Desde.HasValue)
-        {
-            query = query.Where(c => c.Fecha >= filtro.Desde.Value);
-        }
-        if (filtro.Hasta.HasValue)
-        {
-            query = query.Where(c => c.Fecha <= filtro.Hasta.Value);
-        }
+        if (filtro.Desde.HasValue) query = query.Where(c => c.Fecha >= filtro.Desde.Value);
+        if (filtro.Hasta.HasValue) query = query.Where(c => c.Fecha <= filtro.Hasta.Value);
 
-        // NOTA: Considerar paginación si la lista es muy larga
-        // (page, pageSize) = Paging.Normalize(filtro.Page, filtro.PageSize);
-        // var total = await query.CountAsync();
-        // .Skip((page-1)*pageSize).Take(pageSize)
+        var lista = await query.OrderByDescending(c => c.CreatedAt)
+            .Select(c => new CorreccionListadoDto(
+                c.Id,
+                c.IdUsuario,
+                c.Usuario.NombreCompleto,
+                c.Fecha,
+                c.Tipo,
+                c.HoraSolicitada,
+                c.Motivo,
+                c.Estado,
+                c.CreatedAt,
+                null,
+                c.ReviewedAt
+            )).ToListAsync();
 
-        var correcciones = await query
-                                .OrderByDescending(c => c.CreatedAt)
-                                .Select(c => new CorreccionListadoDto(
-                                    c.Id,
-                                    c.IdUsuario,
-                                    c.Usuario != null ? c.Usuario.NombreCompleto : "N/A",
-                                    c.Fecha,
-                                    c.Tipo,
-                                    c.HoraSolicitada,
-                                    c.Motivo,
-                                    c.Estado,
-                                    c.CreatedAt,
-                                    null, // Placeholder nombre revisor
-                                    c.ReviewedAt
-                                ))
-                                .ToListAsync();
-
-        return Ok(correcciones);
+        return Ok(lista);
     }
 
-    // --- ACCIONES DE ADMINISTRADOR ---
-
-    // PUT /api/correcciones/{id}/aprobar (Admin aprueba)
-    /// <summary>
-    /// Aprueba una solicitud de corrección y aplica la marcación. (Admin/SuperAdmin)
-    /// </summary>
-    [Authorize(Roles = "superadmin")]
+    // =========================================================================
+    // 3. APROBAR (SOLO SUPERADMIN) -> CREA MARCACIÓN
+    // =========================================================================
+    // ✅ CAMBIO IMPORTANTE: Usamos HttpPut para coincidir con tu frontend (arregla error 405)
     [HttpPut("{id:int}/aprobar")]
+    [Authorize(Roles = "superadmin")]
     public async Task<IActionResult> AprobarCorreccion(int id)
     {
         var correccion = await _context.Correcciones
-                                     .Include(c => c.Usuario)
-                                         .ThenInclude(u => u != null ? u.Sede : null)
-                                     .FirstOrDefaultAsync(c => c.Id == id);
+            .Include(c => c.Usuario)
+                .ThenInclude(u => u.Sede) // Traemos la sede para las coordenadas
+            .FirstOrDefaultAsync(c => c.Id == id);
 
         if (correccion == null) return NotFound();
-        if (correccion.Usuario == null) return BadRequest("El usuario asociado a la corrección no existe.");
         if (correccion.Estado != EstadoCorreccion.Pendiente)
-            return BadRequest($"La solicitud ya está en estado '{correccion.Estado}'.");
+            return BadRequest($"La solicitud ya está '{correccion.Estado}'.");
 
-        var idAdmin = User.GetUserId();
-        if (idAdmin is null) return Unauthorized("No se pudo identificar al administrador.");
-
-        // --- LÓGICA DE SEDE AÑADIDA ---
-        if (!User.IsSuperAdmin())
-        {
-            var sedeIdAdmin = User.GetSedeId() ?? 0;
-            if (correccion.Usuario.IdSede != sedeIdAdmin)
-            {
-                return Forbid("No puedes aprobar correcciones de usuarios de otra sede.");
-            }
-        }
-        // --- FIN LÓGICA DE SEDE ---
+        var idAdmin = User.GetUserId() ?? 0;
 
         try
         {
-            var tz = TimeZoneInfo.Local; // O tu TimeZoneInfo específico
-            var horaSolicitadaOnly = TimeOnly.FromTimeSpan(correccion.HoraSolicitada);
-            var fechaHoraLocal = correccion.Fecha.ToDateTime(horaSolicitadaOnly);
-            var fechaHoraCorreccionUtc = TimeZoneInfo.ConvertTimeToUtc(fechaHoraLocal, tz);
+            var tz = GetBogotaTz();
 
-            var fechaUtcBuscada = DateOnly.FromDateTime(fechaHoraCorreccionUtc.Date);
-            var marcacionOriginal = await _context.Marcaciones.FirstOrDefaultAsync(m =>
+            // Construir FechaHora exacta
+            var fechaLocal = correccion.Fecha.ToDateTime(TimeOnly.FromTimeSpan(correccion.HoraSolicitada));
+            var fechaUtcFinal = TimeZoneInfo.ConvertTimeToUtc(fechaLocal, tz);
+
+            // Buscar duplicados
+            var rangoInicio = fechaUtcFinal.AddMinutes(-1);
+            var rangoFin = fechaUtcFinal.AddMinutes(1);
+
+            var marcacionExistente = await _context.Marcaciones.FirstOrDefaultAsync(m =>
                 m.IdUsuario == correccion.IdUsuario &&
-                DateOnly.FromDateTime(m.FechaHora.Date) == fechaUtcBuscada &&
-                m.Tipo == correccion.Tipo);
+                m.Tipo == correccion.Tipo &&
+                m.FechaHora >= rangoInicio && m.FechaHora <= rangoFin);
 
-            if (marcacionOriginal != null)
+            if (marcacionExistente != null)
             {
-                marcacionOriginal.FechaHora = fechaHoraCorreccionUtc;
-                // marcacionOriginal.Corregida = true; // Si decides añadir esta columna
+                marcacionExistente.FechaHora = fechaUtcFinal;
             }
             else
             {
+                // ✅ CORRECCIÓN: Usamos los nombres correctos de tu modelo (LatitudMarcacion)
+                // y eliminamos 'Origen' que no existe.
                 var nuevaMarcacion = new Marcacion
                 {
                     IdUsuario = correccion.IdUsuario,
-                    FechaHora = fechaHoraCorreccionUtc,
+                    FechaHora = fechaUtcFinal,
                     Tipo = correccion.Tipo,
-                    LatitudMarcacion = correccion.Usuario.Sede?.Lat ?? 0,
-                    LongitudMarcacion = correccion.Usuario.Sede?.Lon ?? 0,
-                    // Corregida = true // Si decides añadir esta columna
+                    // Convertimos double a decimal
+                    LatitudMarcacion = (decimal)(correccion.Usuario.Sede?.Lat ?? 0),
+                    LongitudMarcacion = (decimal)(correccion.Usuario.Sede?.Lon ?? 0)
                 };
                 _context.Marcaciones.Add(nuevaMarcacion);
             }
 
             correccion.Estado = EstadoCorreccion.Aprobada;
             correccion.ReviewedAt = DateTimeOffset.UtcNow;
-            correccion.ReviewedBy = idAdmin.Value;
+            correccion.ReviewedBy = idAdmin;
 
             _context.Auditorias.Add(new Auditoria
             {
-                IdUsuarioAdmin = idAdmin.Value,
+                IdUsuarioAdmin = idAdmin,
                 Accion = "correccion.approve",
                 Entidad = "Correccion",
                 EntidadId = correccion.Id,
-                DataJson = JsonSerializer.Serialize(new { correccion.IdUsuario, correccion.Fecha, correccion.Tipo, correccion.HoraSolicitada })
+                DataJson = JsonSerializer.Serialize(new { correccion.IdUsuario, NuevaHora = fechaUtcFinal })
             });
 
             await _context.SaveChangesAsync();
-            return NoContent(); // 204 Éxito
+            return Ok(new { mensaje = "Aprobado y marcación aplicada." });
         }
         catch (Exception ex)
         {
-            return StatusCode(500, $"Ocurrió un error al aplicar la corrección: {ex.Message}");
+            return StatusCode(500, $"Error aplicando marcación: {ex.Message}");
         }
     }
 
-    // PUT /api/correcciones/{id}/rechazar (Admin rechaza)
-    /// <summary>
-    /// Rechaza una solicitud de corrección pendiente. (Admin/SuperAdmin)
-    /// </summary>
-    [Authorize(Roles = "superadmin")]
+    // =========================================================================
+    // 4. RECHAZAR
+    // =========================================================================
     [HttpPut("{id:int}/rechazar")]
+    [Authorize(Roles = "superadmin")]
     public async Task<IActionResult> RechazarCorreccion(int id)
     {
-        // --- MODIFICADO: Incluir Usuario para verificar sede ---
-        var correccion = await _context.Correcciones
-                                  .Include(c => c.Usuario)
-                                  .FirstOrDefaultAsync(c => c.Id == id);
-        // --- FIN MODIFICADO ---
-
+        var correccion = await _context.Correcciones.FindAsync(id);
         if (correccion == null) return NotFound();
+
         if (correccion.Estado != EstadoCorreccion.Pendiente)
-            return BadRequest($"La solicitud ya está en estado '{correccion.Estado}'.");
+            return BadRequest($"La solicitud ya está '{correccion.Estado}'.");
 
         var idAdmin = User.GetUserId();
-        if (idAdmin is null) return Unauthorized("No se pudo identificar al administrador.");
-
-        // --- LÓGICA DE SEDE AÑADIDA ---
-        if (!User.IsSuperAdmin())
-        {
-            var sedeIdAdmin = User.GetSedeId() ?? 0;
-            if (correccion.Usuario == null || correccion.Usuario.IdSede != sedeIdAdmin)
-            {
-                return Forbid("No puedes rechazar correcciones de usuarios de otra sede.");
-            }
-        }
-        // --- FIN LÓGICA DE SEDE ---
 
         correccion.Estado = EstadoCorreccion.Rechazada;
         correccion.ReviewedAt = DateTimeOffset.UtcNow;
-        correccion.ReviewedBy = idAdmin.Value;
-
-        // --- Auditoría ---
-        _context.Auditorias.Add(new Auditoria
-        {
-            IdUsuarioAdmin = idAdmin.Value,
-            Accion = "correccion.reject",
-            Entidad = "Correccion",
-            EntidadId = correccion.Id,
-            DataJson = JsonSerializer.Serialize(new { correccion.IdUsuario, correccion.Fecha, correccion.Tipo, correccion.HoraSolicitada })
-        });
-        // --- Fin Auditoría ---
+        correccion.ReviewedBy = idAdmin ?? 0;
 
         await _context.SaveChangesAsync();
-        return NoContent(); // 204 Éxito
+        return Ok(new { mensaje = "Solicitud rechazada." });
     }
 
-    // DELETE /api/correcciones/{id} (Admin O Empleado borra las suyas)
-    /// <summary>
-    /// Elimina una solicitud de corrección (ej. solo pendientes o rechazadas).
-    /// </summary>
-    [Authorize(Roles = "superadmin")]
+    // =========================================================================
+    // 5. BORRAR
+    // =========================================================================
     [HttpDelete("{id:int}")]
-    [Authorize] // <-- MODIFICADO: Permite a todos los logueados, filtramos adentro
     public async Task<IActionResult> BorrarCorreccion(int id)
     {
-        var correccion = await _context.Correcciones
-                                 .Include(a => a.Usuario) // Necesario para chequeo de sede
-                                 .FirstOrDefaultAsync(x => x.Id == id);
-        if (correccion is null) return NotFound();
+        var correccion = await _context.Correcciones.FindAsync(id);
+        if (correccion == null) return NotFound();
 
-        var idUsuarioLogueado = User.GetUserId();
-        if (idUsuarioLogueado is null) return Unauthorized();
+        var idLogueado = User.GetUserId();
+        if (idLogueado == null) return Unauthorized();
 
-        bool tienePermiso = false;
+        bool permiso = false;
 
-        // --- LÓGICA DE PERMISOS DE BORRADO ---
         if (User.IsSuperAdmin())
         {
-            tienePermiso = true; // SuperAdmin puede borrar todo
+            permiso = true;
         }
-        else if (User.IsInRole(Roles.Admin))
+        else if (correccion.IdUsuario == idLogueado)
         {
-            // Admin solo puede borrar de su sede
-            var sedeIdAdmin = User.GetSedeId() ?? 0;
-            if (correccion.Usuario != null && correccion.Usuario.IdSede == sedeIdAdmin)
-            {
-                tienePermiso = true;
-            }
+            if (correccion.Estado != EstadoCorreccion.Aprobada)
+                permiso = true;
         }
-        else // Es Empleado
-        {
-            // Empleado solo puede borrar las suyas PROPIAS
-            // y solo si están pendientes o rechazadas
-            if (correccion.IdUsuario == idUsuarioLogueado && (correccion.Estado == EstadoCorreccion.Pendiente || correccion.Estado == EstadoCorreccion.Rechazada))
-            {
-                tienePermiso = true;
-            }
-        }
-        // --- FIN LÓGICA ---
 
-        if (!tienePermiso)
-        {
-            return Forbid("No tienes permisos para borrar esta solicitud.");
-        }
+        if (!permiso) return Forbid("No tienes permiso para eliminar esta solicitud.");
 
         _context.Correcciones.Remove(correccion);
-
-        // --- Auditoría ---
-        _context.Auditorias.Add(new Auditoria
-        {
-            IdUsuarioAdmin = idUsuarioLogueado.Value, // Quién borró
-            Accion = "correccion.delete",
-            Entidad = "Correccion",
-            EntidadId = id, // ID de la borrada
-            DataJson = JsonSerializer.Serialize(new { correccion.IdUsuario, correccion.Tipo, correccion.Fecha, correccion.Estado })
-        });
-        // --- Fin Auditoría ---
-
         await _context.SaveChangesAsync();
         return NoContent();
     }

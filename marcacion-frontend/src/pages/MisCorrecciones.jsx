@@ -8,22 +8,21 @@ import {
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import AddIcon from "@mui/icons-material/Add";
 import ReplayIcon from "@mui/icons-material/Replay";
-import { LocalizationProvider, DatePicker, TimePicker } from "@mui/x-date-pickers"; // Añadido TimePicker
+import { LocalizationProvider, DatePicker, TimePicker } from "@mui/x-date-pickers";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import dayjs from "dayjs";
 import utc from 'dayjs/plugin/utc';
-import { useAuth } from "../auth/AuthContext"; // Para obtener el ID del usuario
-import { getMisCorrecciones, crearCorreccion, borrarCorreccion } from "../api/correcciones"; // API
+import { useAuth } from "../auth/AuthContext";
+import { getMisCorrecciones, crearCorreccion, borrarCorreccion } from "../api/correcciones";
+import { getUsuarios } from "../api/usuarios"; // ✅ Importar API usuarios
 
 dayjs.extend(utc);
 
-// Helper para formatear DateOnly (YYYY-MM-DD) para mostrar
 const formatDate = (dateOnlyString) => {
     if (!dateOnlyString) return "-";
     return dayjs.utc(dateOnlyString).format("DD/MM/YYYY");
 };
 
-// Helper para formatear TimeSpan (HH:mm:ss) para mostrar (HH:mm)
 const formatTime = (timeSpanString) => {
     if (!timeSpanString || typeof timeSpanString !== 'string') return "-";
     const parts = timeSpanString.split(':');
@@ -33,7 +32,6 @@ const formatTime = (timeSpanString) => {
     return "-";
 };
 
-// Helper para dar color a los chips de estado
 const getStatusColor = (status) => {
     switch (status?.toLowerCase()) {
         case 'aprobada': return 'success';
@@ -45,7 +43,7 @@ const getStatusColor = (status) => {
 
 export default function MisCorrecciones() {
   const { enqueueSnackbar } = useSnackbar();
-  const { user } = useAuth(); // Obtiene el usuario logueado ({ id, email, rol })
+  const { user } = useAuth();
 
   const [correcciones, setCorrecciones] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -53,16 +51,30 @@ export default function MisCorrecciones() {
   const [error, setError] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
 
-  // Estados para el formulario de nueva solicitud
-  const [fecha, setFecha] = useState(null); // dayjs object para DatePicker
-  const [tipo, setTipo] = useState("entrada"); // 'entrada' o 'salida'
-  const [horaSolicitada, setHoraSolicitada] = useState(null); // dayjs object para TimePicker
+  // Estados formulario
+  const [fecha, setFecha] = useState(null);
+  const [tipo, setTipo] = useState("entrada");
+  const [horaSolicitada, setHoraSolicitada] = useState(null);
   const [motivo, setMotivo] = useState("");
 
-  // Carga las correcciones del usuario logueado
+  // --- ✅ LÓGICA DE SELECCIÓN DE USUARIO (SOLO ADMINS) ---
+  const [usuarios, setUsuarios] = useState([]);
+  const [selectedUser, setSelectedUser] = useState(""); // ID seleccionado (string vacío = "Para mí")
+  
+  const isAdminOrSuper = user?.rol === 'admin' || user?.rol === 'superadmin';
+
+  // Cargar lista de usuarios solo si es admin
+  useEffect(() => {
+    if (isAdminOrSuper) {
+        getUsuarios({ page: 1, pageSize: 1000 })
+            .then(res => setUsuarios(res.items))
+            .catch(err => console.error("Error cargando usuarios", err));
+    }
+  }, [isAdminOrSuper]);
+  // ------------------------------------------------------
+
   const loadCorrecciones = () => {
     if (!user?.id) return;
-
     setLoading(true);
     setError(null);
     getMisCorrecciones(user.id)
@@ -74,44 +86,43 @@ export default function MisCorrecciones() {
       .finally(() => setLoading(false));
   };
 
-  // Carga inicial
   useEffect(() => {
     loadCorrecciones();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // Limpia el formulario
   const clearForm = () => {
     setFecha(null);
     setTipo("entrada");
     setHoraSolicitada(null);
     setMotivo("");
+    setSelectedUser(""); // Resetear selección
   };
 
-  // Maneja la creación de una nueva solicitud
   const handleCreate = async () => {
     if (!fecha || !tipo || !horaSolicitada || !motivo.trim()) {
-      enqueueSnackbar("Completa todos los campos: Fecha, Tipo, Hora y Motivo.", { variant: "warning" });
+      enqueueSnackbar("Completa todos los campos obligatorios.", { variant: "warning" });
       return;
     }
 
     setSaving(true);
     const dto = {
-        fecha: fecha, // La API formateará
+        fecha: fecha,
         tipo: tipo,
-        // La API espera "HH:mm" o "HH:mm:ss", TimePicker devuelve objeto dayjs
         horaSolicitada: dayjs(horaSolicitada).format("HH:mm"),
-        motivo: motivo.trim()
+        motivo: motivo.trim(),
+        // ✅ Enviar ID seleccionado (o null si es para sí mismo)
+        idUsuario: selectedUser ? Number(selectedUser) : null 
     };
 
     try {
       await crearCorreccion(dto);
       enqueueSnackbar("Solicitud de corrección enviada.", { variant: "success" });
       clearForm();
-      loadCorrecciones(); // Recarga la lista
+      loadCorrecciones();
     } catch (e) {
-         if (e?.response?.status === 409) { // Conflicto por solicitud pendiente
-           enqueueSnackbar(e?.response?.data || "Conflicto: Ya tienes una solicitud pendiente para esa fecha/tipo.", { variant: "error" });
+         if (e?.response?.status === 409) {
+           enqueueSnackbar(e?.response?.data || "Conflicto: Solicitud duplicada.", { variant: "error" });
          } else {
            enqueueSnackbar(e?.response?.data || "Error al enviar la solicitud.", { variant: "error" });
          }
@@ -120,15 +131,12 @@ export default function MisCorrecciones() {
     }
   };
 
-  // Maneja la eliminación de una solicitud (ej. solo pendientes o rechazadas)
   const handleDelete = async (correccion) => {
-    // Regla: Solo permitir borrar si está pendiente o rechazada
     if (correccion.estado !== 'pendiente' && correccion.estado !== 'rechazada') {
         enqueueSnackbar("Solo puedes eliminar solicitudes pendientes o rechazadas.", { variant: "info" });
         return;
     }
-
-    if (!confirm(`¿Eliminar la solicitud de corrección para el ${formatDate(correccion.fecha)} a las ${formatTime(correccion.horaSolicitada)}?`)) return;
+    if (!confirm(`¿Eliminar solicitud?`)) return;
 
     setDeletingId(correccion.id);
     try {
@@ -136,7 +144,7 @@ export default function MisCorrecciones() {
       enqueueSnackbar("Solicitud eliminada.", { variant: "success" });
       setCorrecciones(prev => prev.filter(c => c.id !== correccion.id));
     } catch (e) {
-      enqueueSnackbar(e?.response?.data || "Error al eliminar la solicitud.", { variant: "error" });
+      enqueueSnackbar(e?.response?.data || "Error al eliminar.", { variant: "error" });
     } finally {
       setDeletingId(null);
     }
@@ -147,9 +155,35 @@ export default function MisCorrecciones() {
       <Stack spacing={3}>
         <Typography variant="h5" fontWeight={800}>Mis Solicitudes de Corrección</Typography>
 
-        {/* Formulario para Nueva Solicitud */}
         <Paper sx={{ p: 2 }}>
-          <Typography variant="h6" gutterBottom>Crear Nueva Solicitud de Corrección</Typography>
+          <Typography variant="h6" gutterBottom>Crear Nueva Solicitud</Typography>
+          
+          {/* --- ✅ SELECTOR DE USUARIO (SOLO ADMINS) --- */}
+          {isAdminOrSuper && (
+             <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={12} md={6}>
+                   <FormControl fullWidth size="small">
+                      <InputLabel id="select-user-label">Solicitar Para (Dejar vacío si es para mí)</InputLabel>
+                      <Select
+                         labelId="select-user-label"
+                         value={selectedUser}
+                         label="Solicitar Para (Dejar vacío si es para mí)"
+                         onChange={(e) => setSelectedUser(e.target.value)}
+                         disabled={saving}
+                      >
+                         <MenuItem value=""><em>-- Para mí mismo --</em></MenuItem>
+                         {usuarios.map(u => (
+                            <MenuItem key={u.id} value={u.id}>
+                               {u.nombreCompleto} ({u.email})
+                            </MenuItem>
+                         ))}
+                      </Select>
+                   </FormControl>
+                </Grid>
+             </Grid>
+          )}
+          {/* ------------------------------------------- */}
+
           <Grid container spacing={2} alignItems="center">
             <Grid item xs={6} sm={3} md={2}>
               <DatePicker
@@ -157,9 +191,9 @@ export default function MisCorrecciones() {
                 value={fecha}
                 onChange={setFecha}
                 slotProps={{ textField: { fullWidth: true, size: 'small' } }}
-                disableFuture // No solicitar correcciones futuras
+                disableFuture
                 disabled={saving}
-                maxDate={dayjs()} // Máximo hoy
+                maxDate={dayjs()}
               />
             </Grid>
             <Grid item xs={6} sm={3} md={2}>
@@ -183,7 +217,7 @@ export default function MisCorrecciones() {
                     value={horaSolicitada}
                     onChange={setHoraSolicitada}
                     slotProps={{ textField: { fullWidth: true, size: 'small' } }}
-                    ampm={false} // Formato 24h
+                    ampm={false}
                     disabled={saving}
                  />
             </Grid>
@@ -207,16 +241,16 @@ export default function MisCorrecciones() {
                 startIcon={saving ? <CircularProgress size={20} color="inherit"/> : <AddIcon />}
                 fullWidth
               >
-                Enviar Solicitud
+                Enviar
               </Button>
             </Grid>
           </Grid>
            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-               Solicita la corrección para una marcación olvidada o incorrecta. Tu supervisor la revisará.
+               Si eres administrador, usa el selector superior para crear una solicitud a nombre de otro empleado.
            </Typography>
         </Paper>
 
-        {/* Lista de Correcciones del Usuario */}
+        {/* Lista de Correcciones */}
         <Paper>
            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
              <Typography variant="h6">Mis Solicitudes</Typography>
@@ -245,12 +279,8 @@ export default function MisCorrecciones() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {loading && (
-                  <TableRow><TableCell colSpan={7} align="center" sx={{ py: 4 }}><CircularProgress /></TableCell></TableRow>
-                )}
-                {!loading && correcciones.length === 0 && (
-                  <TableRow><TableCell colSpan={7} align="center" sx={{ py: 4, color: "text.secondary" }}>No tienes solicitudes de corrección.</TableCell></TableRow>
-                )}
+                {loading && <TableRow><TableCell colSpan={7} align="center" sx={{ py: 4 }}><CircularProgress /></TableCell></TableRow>}
+                {!loading && correcciones.length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{ py: 4, color: "text.secondary" }}>No tienes solicitudes de corrección.</TableCell></TableRow>}
                 {!loading && correcciones.map((c) => (
                   <TableRow key={c.id} hover>
                     <TableCell>{formatDate(c.fecha)}</TableCell>
@@ -264,25 +294,14 @@ export default function MisCorrecciones() {
                       </Tooltip>
                     </TableCell>
                     <TableCell>
-                      <Chip
-                        label={c.estado}
-                        color={getStatusColor(c.estado)}
-                        size="small"
-                        sx={{ textTransform: 'capitalize' }}
-                      />
+                      <Chip label={c.estado} color={getStatusColor(c.estado)} size="small" sx={{ textTransform: 'capitalize' }} />
                     </TableCell>
                     <TableCell>{dayjs(c.createdAt).format("DD/MM/YYYY HH:mm")}</TableCell>
                     <TableCell align="right">
-                      {/* Mostrar botón de borrar solo si está pendiente o rechazada */}
                       {(c.estado === 'pendiente' || c.estado === 'rechazada') && (
                         <Tooltip title="Eliminar Solicitud">
                           <span>
-                            <IconButton
-                              size="small"
-                              color="error"
-                              onClick={() => handleDelete(c)}
-                              disabled={deletingId === c.id}
-                            >
+                            <IconButton size="small" color="error" onClick={() => handleDelete(c)} disabled={deletingId === c.id}>
                               {deletingId === c.id ? <CircularProgress size={20} color="inherit"/> : <DeleteForeverIcon fontSize="small"/>}
                             </IconButton>
                           </span>
@@ -294,9 +313,7 @@ export default function MisCorrecciones() {
               </TableBody>
             </Table>
           </TableContainer>
-           {/* Podrías añadir paginación si el usuario puede tener muchas correcciones */}
         </Paper>
-
       </Stack>
     </LocalizationProvider>
   );

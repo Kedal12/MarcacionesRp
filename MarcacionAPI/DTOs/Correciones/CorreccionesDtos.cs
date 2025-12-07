@@ -1,18 +1,19 @@
 ﻿using System;
 using System.ComponentModel.DataAnnotations;
-using MarcacionAPI.Models; // Para usar TipoCorreccion
+using MarcacionAPI.Models;
 
 namespace MarcacionAPI.DTOs;
 
-// DTO para crear una solicitud de corrección (Empleado)
+// DTO para crear una solicitud de corrección
 public record CorreccionCrearDto(
     [Required] DateOnly Fecha,
     [Required] string Tipo, // "entrada" o "salida"
-    [Required] TimeSpan HoraSolicitada, // "HH:mm:ss" o "HH:mm"
-    [Required][MaxLength(500)] string Motivo
+    [Required] TimeSpan HoraSolicitada, // "HH:mm:ss"
+    [Required][MaxLength(500)] string Motivo,
+    int? IdUsuario = null
+
 );
 
-// DTO para la respuesta al listar correcciones (Admin)
 public record CorreccionListadoDto(
     int Id,
     int IdUsuario,
@@ -23,16 +24,14 @@ public record CorreccionListadoDto(
     string Motivo,
     string Estado,
     DateTimeOffset CreatedAt,
-    string? NombreRevisor, // Nombre del admin que revisó
+    string? NombreRevisor,
     DateTimeOffset? ReviewedAt
 );
 
-// DTO (Query Parameters) para filtrar la lista de correcciones (Admin GET)
 public record CorreccionFiltroDto(
     int? IdUsuario,
     int? IdSede,
-    DateOnly? Desde, // Rango de Fecha de la corrección
+    DateOnly? Desde,
     DateOnly? Hasta,
-    string? Estado // pendiente, aprobada, rechazada
-                   // Podrías añadir paginación si es necesario (page, pageSize)
+    string? Estado
 );
