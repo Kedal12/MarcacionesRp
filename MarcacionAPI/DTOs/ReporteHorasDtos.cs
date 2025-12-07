@@ -6,6 +6,7 @@ public class ReporteHorasRequestDto
     public int? IdSede { get; set; }
     public DateTimeOffset? Desde { get; set; }
     public DateTimeOffset? Hasta { get; set; }
+    public string? NumeroDocumento { get; set; }
 }
 
 public class ReporteHorasItemDto

@@ -1,46 +1,40 @@
 ﻿using MarcacionAPI.Data;
 using MarcacionAPI.DTOs;
 using MarcacionAPI.Models;
-using MarcacionAPI.Services; // AÑADIDO: Para IResumenService
-using MarcacionAPI.Utils; // Para UserExtensions
+using MarcacionAPI.Services;
+using MarcacionAPI.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ClosedXML.Excel;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
-[Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")] // Solo admins
+[Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
 [ApiController]
 [Route("api/[controller]")]
 public class ReportesController : ControllerBase
 {
     private readonly ApplicationDbContext _ctx;
-
-    // --- AÑADIDO: Inyección de IResumenService ---
     private readonly IResumenService _resumenService;
 
     public ReportesController(ApplicationDbContext ctx, IResumenService resumenService)
     {
         _ctx = ctx;
-        _resumenService = resumenService; // AÑADIDO
+        _resumenService = resumenService;
     }
 
-    // --- FIN AÑADIDO ---
-
-    // Helper para obtener TimeZoneInfo (sin cambios)
     private static TimeZoneInfo GetBogotaTz()
     {
         try { return TimeZoneInfo.FindSystemTimeZoneById("America/Bogota"); }
-        catch { return TimeZoneInfo.FindSystemTimeZoneById("SA Pacific Standard Time"); } // Fallback para Windows
+        catch { return TimeZoneInfo.FindSystemTimeZoneById("SA Pacific Standard Time"); }
     }
 
-    // Helper para resolver el horario del día (sin cambios)
     private async Task<(TimeSpan? entrada, TimeSpan? salida, int tolerancia, int redondeo, int descanso)>
         ResolveHorarioDelDia(int idUsuario, DateOnly dia)
     {
-        // busca asignación vigente
         var asig = await _ctx.UsuarioHorarios.AsNoTracking()
             .Where(uh => uh.IdUsuario == idUsuario
                 && uh.Desde <= dia
@@ -49,8 +43,7 @@ public class ReportesController : ControllerBase
             .FirstOrDefaultAsync();
         if (asig == null) return (null, null, 0, 0, 0);
 
-        // Determina el día de la semana (Lunes=1..Domingo=7)
-        int dow = ((int)dia.DayOfWeek + 6) % 7 + 1; // Lunes=1..Domingo=7
+        int dow = ((int)dia.DayOfWeek + 6) % 7 + 1;
 
         var det = await _ctx.HorarioDetalles.AsNoTracking()
             .Where(d => d.IdHorario == asig.IdHorario && d.DiaSemana == dow)
@@ -58,29 +51,40 @@ public class ReportesController : ControllerBase
             .FirstOrDefaultAsync();
 
         if (det == null || !det.Laborable || det.HoraEntrada is null || det.HoraSalida is null)
-            return (null, null, 0, 0, 0); // No laborable o sin detalle
+            return (null, null, 0, 0, 0);
 
-        // --- CORRECCIÓN LÍNEA 54 ---
-        // Se añade '?? 0' a ToleranciaMin para convertir 'int?' a 'int'
         return (det.HoraEntrada, det.HoraSalida, det.ToleranciaMin ?? 0, det.RedondeoMin, det.DescansoMin);
-        // --- FIN CORRECCIÓN ---
     }
 
-    // GET api/reportes/horas?idUsuario=&idSede=&desde=&hasta=
+    // GET api/reportes/horas?idUsuario=&idSede=&desde=&hasta=&numeroDocumento=
     [HttpGet("horas")]
     public async Task<IActionResult> Horas([FromQuery] ReporteHorasRequestDto q)
     {
-        // --- LÓGICA DE SEDE AÑADIDA ---
-        var sedeIdFiltrada = q.IdSede;
-        var idUsuarioFiltrado = q.IdUsuario;
+        int? idUsuarioFiltrado = q.IdUsuario;
 
+        if (!string.IsNullOrWhiteSpace(q.NumeroDocumento))
+        {
+            var usuarioEncontrado = await _ctx.Usuarios
+                .AsNoTracking()
+                .FirstOrDefaultAsync(u => u.NumeroDocumento == q.NumeroDocumento.Trim());
+
+            if (usuarioEncontrado != null)
+            {
+                // Sobreescribimos la variable local con el ID del usuario encontrado
+                idUsuarioFiltrado = usuarioEncontrado.Id;
+            }
+            else
+            {
+                // Si buscó por documento y no existe, devolver vacío inmediatamente
+                return Ok(new List<object>());
+            }
+        }
+
+        var sedeIdFiltrada = q.IdSede;
         if (!User.IsSuperAdmin())
         {
-            // Forzar el filtro de sede al del admin
             sedeIdFiltrada = User.GetSedeId() ?? 0;
 
-            // Si el admin (no superadmin) intenta filtrar por un usuario específico,
-            // verificar que ese usuario pertenezca a SU sede.
             if (idUsuarioFiltrado.HasValue && idUsuarioFiltrado.Value > 0)
             {
                 var usuarioSede = await _ctx.Usuarios.AsNoTracking()
@@ -89,31 +93,25 @@ public class ReportesController : ControllerBase
                                     .FirstOrDefaultAsync();
                 if (usuarioSede == 0 || usuarioSede != sedeIdFiltrada)
                 {
-                    // El admin intenta ver un usuario que no es de su sede.
                     return Forbid("No puedes ver reportes de usuarios de otra sede.");
                 }
             }
         }
-        // --- FIN LÓGICA DE SEDE ---
 
-        // Define el rango de fechas para buscar feriados y ausencias
         var fechaInicio = q.Desde?.Date ?? DateTimeOffset.MinValue.Date;
         var fechaFin = q.Hasta?.Date ?? DateTimeOffset.MaxValue.Date;
         var inicioDateOnly = DateOnly.FromDateTime(fechaInicio);
         var finDateOnly = DateOnly.FromDateTime(fechaFin);
 
-        // --- 1. OBTENER FERIADOS DEL RANGO ---
         var feriadosLookup = await _ctx.Feriados
                                         .Where(f => f.Fecha >= inicioDateOnly && f.Fecha <= finDateOnly)
                                         .ToDictionaryAsync(f => f.Fecha, f => f);
 
-        // --- 2. OBTENER AUSENCIAS APROBADAS DEL RANGO ---
         var ausenciasQuery = _ctx.Ausencias.AsNoTracking()
                                 .Where(a => a.Estado == EstadoAusencia.Aprobada &&
                                     a.Desde <= finDateOnly &&
                                     a.Hasta >= inicioDateOnly);
 
-        // Aplicar filtros validados
         if (idUsuarioFiltrado is > 0)
         {
             ausenciasQuery = ausenciasQuery.Where(a => a.IdUsuario == idUsuarioFiltrado.Value);
@@ -126,16 +124,13 @@ public class ReportesController : ControllerBase
 
         var ausenciasLookup = (await ausenciasQuery.ToListAsync())
                                     .ToLookup(a => a.IdUsuario, a => a);
-        // --- FIN OBTENER AUSENCIAS ---
 
-        // --- 3. OBTENER MARCACIONES (usando filtros validados) ---
         var marc = _ctx.Marcaciones.AsNoTracking();
 
-        if (idUsuarioFiltrado is > 0)
+        if (idUsuarioFiltrado.HasValue && idUsuarioFiltrado.Value > 0)
         {
             marc = marc.Where(m => m.IdUsuario == idUsuarioFiltrado.Value);
         }
-
         if (sedeIdFiltrada is > 0)
         {
             marc =
@@ -154,9 +149,7 @@ public class ReportesController : ControllerBase
             orderby m.IdUsuario, m.FechaHora
             select new { m.IdUsuario, u.NombreCompleto, m.FechaHora, m.Tipo }
         ).ToListAsync();
-        // --- FIN OBTENER MARCACIONES ---
 
-        // --- 4. PROCESAR Y GENERAR REPORTE ---
         var tz = GetBogotaTz();
         var result = new List<object>();
 
@@ -190,7 +183,7 @@ public class ReportesController : ControllerBase
                     }
                 }
                 else
-                { // salida
+                {
                     if (entrada != null)
                     {
                         horas += (m.FechaHora - entrada.Value).TotalHours;
@@ -205,7 +198,6 @@ public class ReportesController : ControllerBase
             }
             if (entrada != null) incompletas++;
 
-            // --- VERIFICAR FERIADO Y AUSENCIA ---
             Feriado? feriadoDelDia = null;
             Ausencia? ausenciaDelDia = null;
 
@@ -232,9 +224,7 @@ public class ReportesController : ControllerBase
                     goto FinCalculosDia;
                 }
             }
-            // --- FIN VERIFICAR ---
 
-            // --- Si NO es feriado no laborable NI ausencia, calcula horario ---
             var (hIn, hOut, tol, _, descanso) = await ResolveHorarioDelDia(idUsuarioActual, diaActual);
 
             if (hIn.HasValue && hOut.HasValue)
@@ -242,18 +232,14 @@ public class ReportesController : ControllerBase
                 if (primeraEntrada.HasValue)
                 {
                     var localEntrada = TimeZoneInfo.ConvertTime(primeraEntrada.Value, tz);
-                    // --- CORRECCIÓN: Convertir DateTime a DateOnly ANTES de llamar ToDateTime ---
                     var progIn = DateOnly.FromDateTime(localEntrada.Date).ToDateTime(TimeOnly.FromTimeSpan(hIn.Value));
-                    // --- FIN CORRECCIÓN ---
                     var delta = (localEntrada - progIn).TotalMinutes - tol;
                     if (delta > 0) tardanzaMin = Math.Round(delta, 0);
                 }
                 if (ultimaSalida.HasValue)
                 {
                     var localSalida = TimeZoneInfo.ConvertTime(ultimaSalida.Value, tz);
-                    // --- CORRECCIÓN: Convertir DateTime a DateOnly ANTES de llamar ToDateTime ---
                     var progOut = DateOnly.FromDateTime(localSalida.Date).ToDateTime(TimeOnly.FromTimeSpan(hOut.Value));
-                    // --- FIN CORRECCIÓN ---
                     var delta2 = (progOut - localSalida).TotalMinutes;
                     if (delta2 > 0) salidaAnticipadaMin = Math.Round(delta2, 0);
 
@@ -262,7 +248,6 @@ public class ReportesController : ControllerBase
                 }
                 horas = Math.Max(0, horas - (descanso / 60.0));
             }
-        // --- FIN CÁLCULO HORARIO ---
 
         FinCalculosDia:
 
@@ -281,22 +266,165 @@ public class ReportesController : ControllerBase
                 ExtraMin = extraMin
             });
         }
-        // --- FIN PROCESAR ---
 
         return Ok(result.OrderBy(r => ((dynamic)r).Nombre).ThenBy(r => ((dynamic)r).Dia));
     }
 
-    // --- AÑADIDO: Nuevo Endpoint para Reporte de Tardanzas ---
-    /// <summary>
-    /// Obtiene un reporte de tardanzas (no compensadas) para un usuario en un mes específico.
-    /// </summary>
+    // ✅ GET api/reportes/exportar-excel - Reporte completo con cálculos
+    [HttpGet("exportar-excel")]
+    public async Task<IActionResult> ExportarExcel(
+        [FromQuery] string? numeroDocumento,
+        [FromQuery] int? idSede,
+        [FromQuery] DateTimeOffset? desde,
+        [FromQuery] DateTimeOffset? hasta)
+    {
+        try
+        {
+            // Reutilizar completamente la lógica del endpoint /horas
+            var dto = new ReporteHorasRequestDto
+            {
+                NumeroDocumento = numeroDocumento,
+                IdSede = idSede,
+                Desde = desde,
+                Hasta = hasta
+            };
+
+            // Llamar al endpoint Horas para obtener los datos calculados
+            var horasResult = await Horas(dto);
+
+            if (horasResult is not OkObjectResult okResult)
+            {
+                return NotFound("No se encontraron datos para exportar");
+            }
+
+            var datos = okResult.Value as IEnumerable<dynamic>;
+            if (datos == null || !datos.Any())
+            {
+                return NotFound("No se encontraron registros para exportar");
+            }
+
+            // Crear Excel
+            using var workbook = new XLWorkbook();
+            var worksheet = workbook.Worksheets.Add("Reporte de Horas");
+
+            // Encabezados
+            worksheet.Cell(1, 1).Value = "Usuario";
+            worksheet.Cell(1, 2).Value = "Día";
+            worksheet.Cell(1, 3).Value = "Nota";
+            worksheet.Cell(1, 4).Value = "Primera Entrada";
+            worksheet.Cell(1, 5).Value = "Última Salida";
+            worksheet.Cell(1, 6).Value = "Horas (Netas)";
+            worksheet.Cell(1, 7).Value = "Marc. Incompletas";
+            worksheet.Cell(1, 8).Value = "Tardanza (min)";
+            worksheet.Cell(1, 9).Value = "Salida Antic. (min)";
+            worksheet.Cell(1, 10).Value = "Extra (min)";
+
+            // Estilo encabezados
+            var headerRange = worksheet.Range(1, 1, 1, 10);
+            headerRange.Style.Font.Bold = true;
+            headerRange.Style.Fill.BackgroundColor = XLColor.FromArgb(79, 129, 189);
+            headerRange.Style.Font.FontColor = XLColor.White;
+            headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+
+            // Datos
+            var tz = GetBogotaTz();
+            int row = 2;
+
+            foreach (dynamic d in datos)
+            {
+                worksheet.Cell(row, 1).Value = d.Nombre ?? "";
+                worksheet.Cell(row, 2).Value = ((DateOnly)d.Dia).ToString("dd/MM/yyyy");
+                worksheet.Cell(row, 3).Value = d.NotaDia ?? "-";
+
+                // Primera Entrada
+                if (d.PrimeraEntrada != null)
+                {
+                    var entrada = TimeZoneInfo.ConvertTime((DateTimeOffset)d.PrimeraEntrada, tz);
+                    worksheet.Cell(row, 4).Value = entrada.ToString("HH:mm:ss");
+                }
+                else
+                {
+                    worksheet.Cell(row, 4).Value = "-";
+                }
+
+                // Última Salida
+                if (d.UltimaSalida != null)
+                {
+                    var salida = TimeZoneInfo.ConvertTime((DateTimeOffset)d.UltimaSalida, tz);
+                    worksheet.Cell(row, 5).Value = salida.ToString("HH:mm:ss");
+                }
+                else
+                {
+                    worksheet.Cell(row, 5).Value = "-";
+                }
+
+                worksheet.Cell(row, 6).Value = (double)d.Horas;
+                worksheet.Cell(row, 7).Value = (int)d.MarcacionesIncompletas;
+                worksheet.Cell(row, 8).Value = (double)d.TardanzaMin;
+                worksheet.Cell(row, 9).Value = (double)d.SalidaAnticipadaMin;
+                worksheet.Cell(row, 10).Value = (double)d.ExtraMin;
+
+                // Formato condicional para tardanzas
+                if ((double)d.TardanzaMin > 0)
+                {
+                    worksheet.Cell(row, 8).Style.Font.FontColor = XLColor.DarkOrange;
+                    worksheet.Cell(row, 8).Style.Font.Bold = true;
+                }
+
+                // Formato condicional para salidas anticipadas
+                if ((double)d.SalidaAnticipadaMin > 0)
+                {
+                    worksheet.Cell(row, 9).Style.Font.FontColor = XLColor.DarkOrange;
+                    worksheet.Cell(row, 9).Style.Font.Bold = true;
+                }
+
+                // Formato condicional para extras
+                if ((double)d.ExtraMin > 0)
+                {
+                    worksheet.Cell(row, 10).Style.Font.FontColor = XLColor.Green;
+                    worksheet.Cell(row, 10).Style.Font.Bold = true;
+                }
+
+                row++;
+            }
+
+            // Ajustar columnas
+            worksheet.Columns().AdjustToContents();
+
+            // Agregar bordes
+            var dataRange = worksheet.Range(1, 1, row - 1, 10);
+            dataRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+            dataRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+
+            // Generar archivo
+            using var stream = new MemoryStream();
+            workbook.SaveAs(stream);
+            stream.Position = 0;
+
+            var fileName = string.IsNullOrWhiteSpace(numeroDocumento)
+                ? $"Reporte_Horas_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx"
+                : $"Reporte_Horas_{numeroDocumento}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
+
+            return File(
+                stream.ToArray(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                fileName
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error generando Excel: {ex.Message}");
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            return StatusCode(500, $"Error al generar el Excel: {ex.Message}");
+        }
+    }
+
     [HttpGet("tardanzas")]
     public async Task<IActionResult> ReporteTardanzas(
         [FromQuery] int año,
         [FromQuery] int mes,
         [FromQuery] int idUsuario)
     {
-        // --- 1. Seguridad de Sede (lógica similar a /horas) ---
         if (!User.IsSuperAdmin())
         {
             var sedeIdAdmin = User.GetSedeId();
@@ -310,9 +438,7 @@ public class ReportesController : ControllerBase
                 return Forbid("No puedes ver reportes de usuarios de otra sede.");
             }
         }
-        // --- Fin Seguridad ---
 
-        // --- 2. Llamar al servicio ---
         try
         {
             var resumenCompleto = await _resumenService.GetResumenCompletoMes(idUsuario, año, mes);
@@ -320,10 +446,7 @@ public class ReportesController : ControllerBase
         }
         catch (Exception ex)
         {
-            // Captura errores del servicio (ej. "Usuario sin horario")
             return BadRequest(new { error = ex.Message });
         }
     }
-
-    // --- FIN AÑADIDO ---
 }

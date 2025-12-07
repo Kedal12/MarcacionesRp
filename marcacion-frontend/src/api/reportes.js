@@ -1,30 +1,65 @@
-import api from "./axios"; // Asegúrate que tu instancia de axios esté aquí
+import api from "./axios";
 
 /**
- * Obtiene el reporte de horas trabajadas.
- * @param {object} params - Los parámetros de filtro.
- * @param {number} [params.idUsuario] - ID del usuario (opcional).
- * @param {number} [params.idSede] - ID de la sede (opcional).
- * @param {string} [params.desde] - Fecha 'desde' en formato ISO UTC (start of day).
- * @param {string} [params.hasta] - Fecha 'hasta' en formato ISO UTC (end of day).
- * @returns {Promise<Array<object>>} - Promesa con el array de resultados del reporte.
+ * Obtiene los datos para el Reporte de Horas (visualización en pantalla).
  */
 export const getHoras = async (params) => {
-  // Limpia parámetros vacíos o inválidos antes de enviar
+  // ✅ LOGS ANTES DE PROCESAR
+  console.log("=== getHoras DEBUG - INICIO ===");
+  console.log("Params recibidos:", params);
+  
   const cleanParams = {};
-  if (params.idUsuario && !isNaN(parseInt(params.idUsuario))) {
-    cleanParams.idUsuario = parseInt(params.idUsuario);
+  if (params.numeroDocumento) {
+      cleanParams.NumeroDocumento = params.numeroDocumento; 
   }
-  if (params.idSede && !isNaN(parseInt(params.idSede))) {
-    cleanParams.idSede = parseInt(params.idSede);
-  }
-  if (params.desde) {
-    cleanParams.desde = params.desde;
-  }
-  if (params.hasta) {
-    cleanParams.hasta = params.hasta;
-  }
+  if (params.idSede) cleanParams.idSede = parseInt(params.idSede);
+  if (params.desde) cleanParams.desde = params.desde;
+  if (params.hasta) cleanParams.hasta = params.hasta;
+
+  // ✅ LOGS DESPUÉS DE LIMPIAR
+  console.log("cleanParams enviados:", cleanParams);
+  console.log("URL que se va a llamar: /api/reportes/horas");
+  console.log("====================");
 
   const { data } = await api.get("/api/reportes/horas", { params: cleanParams });
-  return data; // El backend ya devuelve el array de resultados
+  
+  // ✅ LOGS DE LA RESPUESTA
+  console.log("=== RESPUESTA ===");
+  console.log("Datos recibidos:", data);
+  console.log("Cantidad de registros:", data?.length);
+  console.log("=================");
+  
+  return data;
+};
+
+/**
+ * Descarga el reporte de asistencia en formato Excel (.xlsx).
+ */
+export const descargarExcelAsistencia = async (params) => {
+  const cleanParams = {};
+
+  if (params.numeroDocumento?.trim()) {
+    cleanParams.numeroDocumento = params.numeroDocumento.trim();
+  }
+  
+  if (params.idSede) {
+    cleanParams.idSede = parseInt(params.idSede);
+  }
+
+  if (params.desde) cleanParams.desde = params.desde;
+  if (params.hasta) cleanParams.hasta = params.hasta;
+
+  try {
+    const response = await api.get("/api/reportes/exportar-excel", {
+      params: cleanParams,
+      responseType: 'blob',
+      timeout: 60000
+    });
+
+    return response;
+  } catch (error) {
+    console.error("Error en descargarExcelAsistencia:", error);
+    console.error("Params enviados:", cleanParams);
+    throw error;
+  }
 };

@@ -136,6 +136,8 @@ public class AuthController : ControllerBase
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(usuarioDto.Password),
             Rol = rolNormalizado,
             IdSede = idSede,
+            TipoDocumento = usuarioDto.TipoDocumento,
+            NumeroDocumento = usuarioDto.NumeroDocumento,
             Activo = true
         };
 

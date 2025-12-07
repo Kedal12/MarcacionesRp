@@ -9,4 +9,6 @@ public class UsuarioListadoDto
     public int IdSede { get; set; }
     public string? SedeNombre { get; set; }
     public bool Activo { get; set; }
+    public string? TipoDocumento { get; set; }
+    public string? NumeroDocumento { get; set; }
 }

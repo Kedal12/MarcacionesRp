@@ -182,6 +182,7 @@ public class CorreccionesController : ControllerBase
     /// <summary>
     /// Aprueba una solicitud de corrección y aplica la marcación. (Admin/SuperAdmin)
     /// </summary>
+    [Authorize(Roles = "superadmin")]
     [HttpPut("{id:int}/aprobar")]
     public async Task<IActionResult> AprobarCorreccion(int id)
     {
@@ -267,6 +268,7 @@ public class CorreccionesController : ControllerBase
     /// <summary>
     /// Rechaza una solicitud de corrección pendiente. (Admin/SuperAdmin)
     /// </summary>
+    [Authorize(Roles = "superadmin")]
     [HttpPut("{id:int}/rechazar")]
     public async Task<IActionResult> RechazarCorreccion(int id)
     {
@@ -317,6 +319,7 @@ public class CorreccionesController : ControllerBase
     /// <summary>
     /// Elimina una solicitud de corrección (ej. solo pendientes o rechazadas).
     /// </summary>
+    [Authorize(Roles = "superadmin")]
     [HttpDelete("{id:int}")]
     [Authorize] // <-- MODIFICADO: Permite a todos los logueados, filtramos adentro
     public async Task<IActionResult> BorrarCorreccion(int id)

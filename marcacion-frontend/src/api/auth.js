@@ -24,9 +24,9 @@ export async function me() {
 }
 
 /** (Opcional) registrar usuario desde el panel admin */
-export async function register({ nombreCompleto, email, password, rol, idSede }) {
+export async function register({ nombreCompleto, email, password, rol, idSede, tipoDocumento, numeroDocumento }) {
   const { data } = await api.post("/api/usuarios", {
-    nombreCompleto, email, password, rol, idSede
+    nombreCompleto, email, password, rol, idSede, tipoDocumento, numeroDocumento // <--- Agrégalos aquí
   });
   return data;
 }

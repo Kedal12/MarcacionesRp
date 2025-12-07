@@ -1,7 +1,7 @@
 ﻿using MarcacionAPI.Data;
 using MarcacionAPI.DTOs;
 using MarcacionAPI.Models;
-using MarcacionAPI.Utils; // ← Para usar IsSuperAdmin() y GetSedeId()
+using MarcacionAPI.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -11,7 +11,7 @@ namespace MarcacionAPI.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "superadmin,admin")] // ← Cambiado: ahora acepta ambos roles
+[Authorize(Roles = "superadmin,admin")]
 public class UsuariosController : ControllerBase
 {
     private readonly ApplicationDbContext _context;
@@ -31,19 +31,17 @@ public class UsuariosController : ControllerBase
         var q = _context.Usuarios
             .Include(u => u.Sede)
             .AsNoTracking()
-            .Where(u => u.Activo) // Solo usuarios activos
+            .Where(u => u.Activo)
             .AsQueryable();
 
         // *** FILTRO POR SEDE ***
         if (!User.IsSuperAdmin())
         {
-            // Admin de sede: solo ve usuarios de su sede
             var sedeId = User.GetSedeId() ?? 0;
             q = q.Where(u => u.IdSede == sedeId);
         }
         else if (idSede.HasValue && idSede.Value > 0)
         {
-            // Superadmin: puede filtrar por sede opcional
             q = q.Where(u => u.IdSede == idSede.Value);
         }
 
@@ -69,7 +67,9 @@ public class UsuariosController : ControllerBase
                 Email = u.Email,
                 Rol = u.Rol,
                 IdSede = u.IdSede,
-                SedeNombre = u.Sede!.Nombre,
+                SedeNombre = u.Sede != null ? u.Sede.Nombre : "Sin sede",
+                TipoDocumento = u.TipoDocumento ?? "",
+                NumeroDocumento = u.NumeroDocumento ?? "",
                 Activo = u.Activo
             })
             .ToListAsync();
@@ -93,7 +93,7 @@ public class UsuariosController : ControllerBase
         {
             var sedeId = User.GetSedeId() ?? -1;
             if (u.IdSede != sedeId)
-                return Forbid(); // Admin no puede ver usuarios de otra sede
+                return Forbid();
         }
 
         return Ok(new UsuarioListadoDto
@@ -103,7 +103,9 @@ public class UsuariosController : ControllerBase
             Email = u.Email,
             Rol = u.Rol,
             IdSede = u.IdSede,
-            SedeNombre = u.Sede!.Nombre,
+            SedeNombre = u.Sede != null ? u.Sede.Nombre : "Sin sede",
+            TipoDocumento = u.TipoDocumento ?? "",
+            NumeroDocumento = u.NumeroDocumento ?? "",
             Activo = u.Activo
         });
     }
@@ -120,7 +122,7 @@ public class UsuariosController : ControllerBase
         {
             var sedeId = User.GetSedeId() ?? -1;
             if (u.IdSede != sedeId)
-                return Forbid(); // Admin no puede resetear contraseña de otra sede
+                return Forbid();
         }
 
         if (dto.NewPassword.Length < 6)
@@ -156,20 +158,17 @@ public class UsuariosController : ControllerBase
         // *** RESTRICCIONES POR ROL ***
         if (!User.IsSuperAdmin())
         {
-            // Admin de sede: fuerza IdSede a su propia sede
             var sedeId = User.GetSedeId() ?? 0;
             if (sedeId == 0)
                 return Unauthorized("No se pudo identificar la sede del administrador.");
 
             dto.IdSede = sedeId;
 
-            // Admin solo puede crear empleados (no otros admin)
             if (!string.Equals(dto.Rol, "empleado", StringComparison.OrdinalIgnoreCase))
                 return Forbid("Solo puedes crear usuarios con rol 'empleado'.");
         }
         else
         {
-            // Superadmin: puede crear cualquier rol (empleado, admin, superadmin)
             if (dto.Rol is not ("empleado" or "admin" or "superadmin"))
                 return BadRequest("Rol inválido (empleado/admin/superadmin).");
         }
@@ -184,6 +183,8 @@ public class UsuariosController : ControllerBase
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password),
             Rol = dto.Rol.ToLowerInvariant(),
             IdSede = dto.IdSede,
+            TipoDocumento = dto.TipoDocumento ?? "",
+            NumeroDocumento = dto.NumeroDocumento ?? "",
             Activo = true
         };
 
@@ -221,17 +222,14 @@ public class UsuariosController : ControllerBase
             if (u.IdSede != sedeId)
                 return Forbid("No puedes editar usuarios de otra sede.");
 
-            // Admin no puede cambiar la sede del usuario
             if (dto.IdSede != u.IdSede)
                 return BadRequest("No puedes cambiar la sede del usuario.");
 
-            // Admin solo puede asignar rol 'empleado'
             if (!string.Equals(dto.Rol, "empleado", StringComparison.OrdinalIgnoreCase))
                 return Forbid("Solo puedes asignar el rol 'empleado'.");
         }
         else
         {
-            // Superadmin: validar rol y sede
             if (dto.Rol is not ("empleado" or "admin" or "superadmin"))
                 return BadRequest("Rol inválido (empleado/admin/superadmin).");
 
@@ -243,6 +241,8 @@ public class UsuariosController : ControllerBase
         u.Rol = dto.Rol.ToLowerInvariant();
         u.IdSede = dto.IdSede;
         u.Activo = dto.Activo;
+        u.TipoDocumento = dto.TipoDocumento ?? "";
+        u.NumeroDocumento = dto.NumeroDocumento ?? "";
 
         // Auditoría
         var idAdminClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);

@@ -7,7 +7,6 @@ import { useState } from "react";
 import { useAuth } from "./auth/AuthContext";
 import ChangePasswordDialog from "./components/ChangePasswordDialog";
 
-// Definir roles localmente para claridad
 const ROLES = {
   SUPERADMIN: "superadmin",
   ADMIN: "admin",
@@ -19,18 +18,15 @@ export default function App() {
   const nav = useNavigate();
   const { pathname } = useLocation();
 
-  // Normalizar el rol a minúsculas para comparaciones consistentes
   const role = (user?.rol || "").toLowerCase();
   const isAdmin = role === ROLES.ADMIN;
   const isSuperAdmin = role === ROLES.SUPERADMIN;
 
-  // menú del avatar
   const [anchor, setAnchor] = useState(null);
   const open = Boolean(anchor);
   const handleOpen = (e) => setAnchor(e.currentTarget);
   const handleClose = () => setAnchor(null);
 
-  // Estado para controlar el diálogo de cambiar contraseña
   const [openPassDialog, setOpenPassDialog] = useState(false);
 
   const goLogout = () => {
@@ -39,7 +35,6 @@ export default function App() {
     nav("/login");
   };
 
-  // Función para abrir el diálogo (y cerrar el menú)
   const handleOpenPassDialog = () => {
     handleClose();
     setOpenPassDialog(true);
@@ -127,23 +122,7 @@ export default function App() {
                   Reporte Horas
                 </Button>
 
-                <Button
-                  component={Link}
-                  to="/ausenciasadmin"
-                  variant={pathname.startsWith("/ausenciasadmin") ? "contained" : "text"}
-                  color="primary"
-                >
-                  Gestionar Ausencias
-                </Button>
-
-                <Button
-                  component={Link}
-                  to="/correcciones-admin"
-                  variant={pathname.startsWith("/correcciones-admin") ? "contained" : "text"}
-                  color="primary"
-                >
-                  Gestionar Correcciones
-                </Button>
+                {/* --- 🛑 CAMBIO AQUÍ: Moví los botones de gestión a la sección de SuperAdmin abajo 🛑 --- */}
 
                 {/* Botón de Horarios - Aparece para ADMIN y SUPERADMIN */}
                 <Button
@@ -161,6 +140,26 @@ export default function App() {
             {/* --- Botones SÓLO PARA SUPERADMIN --- */}
             {isSuperAdmin && (
               <>
+                {/* ✅ AQUÍ MUEVO LOS BOTONES DE GESTIÓN (RRHH) */}
+                <Button
+                  component={Link}
+                  to="/ausenciasadmin"
+                  variant={pathname.startsWith("/ausenciasadmin") ? "contained" : "text"}
+                  color="primary"
+                >
+                  Gestionar Ausencias
+                </Button>
+
+                <Button
+                  component={Link}
+                  to="/correcciones-admin"
+                  variant={pathname.startsWith("/correcciones-admin") ? "contained" : "text"}
+                  color="primary"
+                >
+                  Gestionar Correcciones
+                </Button>
+                {/* ------------------------------------------- */}
+
                 <Button
                   component={Link}
                   to="/sedes"

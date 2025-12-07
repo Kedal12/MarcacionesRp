@@ -18,4 +18,10 @@ public class UsuarioCreacionDto
 
     // Si te interesa que por default sea 1 cuando no lo envían, puedes dejarlo en 0 aquí
     public int IdSede { get; set; } = 0;
+
+    [Required]
+    public string TipoDocumento { get; set; } // CC, CE, PAS
+
+    [Required]
+    public string NumeroDocumento { get; set; }
 }

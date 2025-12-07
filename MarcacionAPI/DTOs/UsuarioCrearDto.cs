@@ -9,4 +9,10 @@ public class UsuarioCrearDto
     [Required, MinLength(6)] public string Password { get; set; } = string.Empty;
     [Required, RegularExpression("^(empleado|admin)$")] public string Rol { get; set; } = "empleado"; // empleado | admin
     [Range(1, int.MaxValue)] public int IdSede { get; set; }
+
+    [Required]
+    public string TipoDocumento { get; set; } // CC, CE, PAS
+
+    [Required]
+    public string NumeroDocumento { get; set; }
 }

@@ -29,4 +29,7 @@ public class Usuario
 
     // ¡Sin new!
     public Sede? Sede { get; set; }
+
+    public string TipoDocumento { get; set; } // Ej: "CC", "CE", "TI"
+    public string NumeroDocumento { get; set; }
 }

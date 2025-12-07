@@ -435,7 +435,8 @@ public class MarcacionesController : ControllerBase
     [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
     public async Task<IActionResult> Listar(
        [FromQuery] int? idSede,
-       [FromQuery] int? idUsuario,
+       [FromQuery] int? idUsuario, // Lo mantenemos por compatibilidad, pero usaremos el documento
+       [FromQuery] string? numeroDocumento, // <--- NUEVO PARÁMETRO
        [FromQuery] DateTimeOffset? desde,
        [FromQuery] DateTimeOffset? hasta,
        [FromQuery] string? tipo,
@@ -443,12 +444,12 @@ public class MarcacionesController : ControllerBase
        [FromQuery] int pageSize = Paging.DefaultPageSize)
     {
         (page, pageSize) = Paging.Normalize(page, pageSize);
-
-        // --- ✅ CAMBIO AQUÍ: Añadir TzBogota ---
         var tz = TzBogota();
-        // --- FIN DEL CAMBIO ---
 
-        var query = _context.Marcaciones.AsNoTracking().AsQueryable();
+        // 1. Iniciamos la query incluyendo al Usuario para poder filtrar y mostrar nombre
+        var query = _context.Marcaciones.AsNoTracking()
+                            .Include(m => m.Usuario) // <--- IMPORTANTE
+                            .AsQueryable();
 
         var sedeIdFiltrada = idSede;
         if (!User.IsSuperAdmin())
@@ -456,8 +457,16 @@ public class MarcacionesController : ControllerBase
             sedeIdFiltrada = User.GetSedeId() ?? 0;
         }
 
+        // Filtro por ID (existente)
         if (idUsuario.HasValue && idUsuario.Value > 0)
             query = query.Where(m => m.IdUsuario == idUsuario.Value);
+
+        // 2. NUEVO: Filtro por Número de Documento
+        if (!string.IsNullOrWhiteSpace(numeroDocumento))
+        {
+            var docTrim = numeroDocumento.Trim();
+            query = query.Where(m => m.Usuario.NumeroDocumento == docTrim);
+        }
 
         if (!string.IsNullOrWhiteSpace(tipo))
         {
@@ -471,16 +480,12 @@ public class MarcacionesController : ControllerBase
 
         if (sedeIdFiltrada.HasValue && sedeIdFiltrada.Value > 0)
         {
-            query =
-                from m in query
-                join u in _context.Usuarios.AsNoTracking() on m.IdUsuario equals u.Id
-                where u.IdSede == sedeIdFiltrada.Value
-                select m;
+            // Nota: Al usar Include(m => m.Usuario), ya podemos filtrar por m.Usuario.IdSede
+            query = query.Where(m => m.Usuario.IdSede == sedeIdFiltrada.Value);
         }
 
         var total = await query.CountAsync();
 
-        // --- ✅ CAMBIO AQUÍ: Modificar el .Select para incluir campos Locales ---
         var items = await query
             .OrderByDescending(m => m.FechaHora)
             .Skip((page - 1) * pageSize)
@@ -489,6 +494,11 @@ public class MarcacionesController : ControllerBase
             {
                 m.Id,
                 m.IdUsuario,
+
+                // 3. NUEVOS CAMPOS PARA EL FRONTEND
+                NombreUsuario = m.Usuario.NombreCompleto,
+                DocumentoUsuario = m.Usuario.NumeroDocumento,
+
                 m.Tipo,
                 Latitud = m.LatitudMarcacion,
                 Longitud = m.LongitudMarcacion,
@@ -505,7 +515,6 @@ public class MarcacionesController : ControllerBase
                 finAlmuerzoLocal = m.FinAlmuerzo.HasValue ? TimeZoneInfo.ConvertTime(m.FinAlmuerzo.Value, tz) : (DateTimeOffset?)null
             })
             .ToListAsync();
-        // --- FIN DEL CAMBIO ---
 
         return Ok(new PagedResponse<object>(items, total, page, pageSize));
     }

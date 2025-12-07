@@ -49,7 +49,6 @@ import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import KeyIcon from "@mui/icons-material/Key";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
-// --- AÑADIDO: Importar useAuth y definir Roles ---
 import { useAuth } from "../auth/AuthContext";
 
 const ROLES = {
@@ -57,67 +56,59 @@ const ROLES = {
   ADMIN: "admin",
   EMPLEADO: "empleado"
 };
-// --- FIN AÑADIDO ---
-
 
 export default function Usuarios() {
-  // --- AÑADIDO: Obtener usuario y rol ---
   const { user } = useAuth();
   const isSuperAdmin = useMemo(() => user?.rol === ROLES.SUPERADMIN, [user]);
-  // --- FIN AÑADIDO ---
 
-  // datos + paginación
   const [data, setData] = useState({ items: [], total: 0, page: 1, pageSize: 10 });
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
 
-  // filtros
-  const [sedes, setSedes] = useState([]); // Lista de sedes para el dropdown
-  const [idSede, setIdSede] = useState(""); // Filtro de sede
+  const [sedes, setSedes] = useState([]); 
+  const [idSede, setIdSede] = useState(""); 
   const [search, setSearch] = useState("");
 
-  // ui
   const [loading, setLoading] = useState(false);
-  const [loadingSedes, setLoadingSedes] = useState(false); // AÑADIDO
+  const [loadingSedes, setLoadingSedes] = useState(false); 
   const [err, setErr] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
 
-  // dialogs
   const [openNew, setOpenNew] = useState(false);
   const [openEdit, setOpenEdit] = useState(false);
   const [editing, setEditing] = useState(null);
 
-  // Reset password dialog
   const [resetOpen, setResetOpen] = useState(false);
   const [pendingUser, setPendingUser] = useState(null);
   const [newPass, setNewPass] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  // form create
   const [fNombre, setFNombre] = useState("");
   const [fEmail, setFEmail] = useState("");
   const [fPassword, setFPassword] = useState("");
-  const [fRol, setFRol] = useState("empleado"); // Default para superadmin
-  const [fSede, setFSede] = useState(""); // Default para superadmin
+  const [fTipoDoc, setFTipoDoc] = useState("CC");
+  const [fNumDoc, setFNumDoc] = useState("");
+  const [fRol, setFRol] = useState("empleado"); 
+  const [fSede, setFSede] = useState(""); 
 
-  // form edit
   const [eNombre, setENombre] = useState("");
   const [eRol, setERol] = useState("empleado");
   const [eSede, setESede] = useState("");
   const [eActivo, setEActivo] = useState(true);
+  const [eTipoDoc, setETipoDoc] = useState("CC");
+  const [eNumDoc, setENumDoc] = useState("");
 
   const { enqueueSnackbar } = useSnackbar();
 
-  // (util export - sin cambios)
   function toCsvValue(v) {
     if (v === null || v === undefined) return '""';
     const s = String(v).replace(/"/g, '""');
     return `"${s}"`;
   }
+
   async function fetchAllUsuarios() {
-    // query ya está filtrado por sede si es admin
     const size = 500;
     let p = 1;
     const all = [];
@@ -129,13 +120,22 @@ export default function Usuarios() {
     }
     return all;
   }
+
   async function exportCsvUsuarios() {
     try {
       setExporting(true);
-      const items = await fetchAllUsuarios(); // Usa la data ya filtrada
-      const header = ["Id", "Nombre", "Email", "Rol", "Sede", "Activo"];
+      const items = await fetchAllUsuarios();
+      // ✅ AÑADIDO: Incluir documento en CSV
+      const header = ["Id", "Nombre", "Email", "Tipo Doc", "No. Doc", "Rol", "Sede", "Activo"];
       const rows = items.map((u) => [
-        u.id, u.nombreCompleto, u.email, u.rol, u.sedeNombre ?? u.idSede, u.activo ? "Sí" : "No",
+        u.id,
+        u.nombreCompleto,
+        u.email,
+        u.tipoDocumento || "-",
+        u.numeroDocumento || "-",
+        u.rol,
+        u.sedeNombre ?? u.idSede,
+        u.activo ? "Sí" : "No",
       ]);
       const csv = [header, ...rows].map((r) => r.map(toCsvValue).join(",")).join("\n");
       const csvWithBom = "\uFEFF" + csv;
@@ -157,90 +157,81 @@ export default function Usuarios() {
     }
   }
 
-  // --- MODIFICADO: Cargar sedes solo si es SuperAdmin ---
   useEffect(() => {
-    if (isSuperAdmin) { // Solo superadmin necesita la lista para el FILTRO
+    if (isSuperAdmin) { 
       setLoadingSedes(true);
       getSedes({ page: 1, pageSize: 1000 })
-        .then((data) => setSedes(data.items))
-        .catch(() => { setSedes([]); enqueueSnackbar("Error cargando sedes", {variant: "error"}); })
+        .then((data) => setSedes(data?.items || []))
+        .catch(() => {
+          setSedes([]);
+          enqueueSnackbar("Error cargando sedes", { variant: "error" });
+        })
         .finally(() => setLoadingSedes(false));
     }
-    // Nota: El diálogo de "Crear" también usa 'sedes'.
-    // Si un admin necesita crear usuarios (y el campo Sede NO está oculto),
-    // deberíamos cargar 'sedes' para todos los admins.
-    // Pero como ocultaremos el campo Sede para 'admin', esta lógica es correcta.
   }, [isSuperAdmin, enqueueSnackbar]);
-  // --- FIN MODIFICADO ---
 
-  // --- AÑADIDO: Efecto para forzar la sede si el usuario es admin ---
   useEffect(() => {
     if (user && !isSuperAdmin) {
-      // Si el usuario es admin (no superadmin), forzar su ID de sede en el filtro
       setIdSede(String(user.idSede || ""));
     }
   }, [user, isSuperAdmin]);
-  // --- FIN AÑADIDO ---
-
 
   const query = useMemo(() => {
     const p = { page: page + 1, pageSize: rowsPerPage };
     if (search.trim()) p.search = search.trim();
-    // idSede es forzado por el useEffect si es admin, o seteado por el Select si es superadmin
     if (idSede) p.idSede = Number(idSede);
     return p;
   }, [page, rowsPerPage, search, idSede]);
 
-
   function load() {
-    // Evita carga inicial si es admin y el idSede (forzado) aún no se ha seteado
     if (user?.rol === ROLES.ADMIN && !idSede) {
-        return; 
+      return; 
     }
     
     setLoading(true);
     setErr(null);
     return getUsuarios(query)
-      .then(setData)
-      .catch((e) => setErr(e?.response?.data || e.message || "Error cargando usuarios"))
+      .then((data) => {
+        if (data?.items) {
+          setData(data);
+        }
+      })
+      .catch((e) => {
+        console.error("Error cargando usuarios:", e);
+        setErr(e?.response?.data || e.message || "Error cargando usuarios");
+      })
       .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     load();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, user?.rol, idSede]); // Depende de query (que depende de idSede)
-
-  // CRUD
+  }, [query, user?.rol, idSede]); 
 
   function openCreate() {
     setFNombre("");
     setFEmail("");
     setFPassword("");
-    // Defaults:
+    setFTipoDoc("CC");
+    setFNumDoc("");
     setFRol("empleado"); 
-    // Si es SuperAdmin, fSede vacío para que elija.
-    // Si es Admin, se seteará en onCreate basado en user.idSede.
     setFSede(""); 
     setOpenNew(true);
   }
 
-  // --- MODIFICADO: onCreate usa lógica de roles ---
   async function onCreate() {
     try {
-      // Define el payload basado en el rol
       const payload = {
         nombreCompleto: fNombre,
         email: fEmail,
         password: fPassword,
-        rol: isSuperAdmin ? fRol : ROLES.EMPLEADO, // Admin solo puede crear empleados
-        idSede: isSuperAdmin ? Number(fSede) : user.idSede, // Admin usa su propia sede
+        tipoDocumento: fTipoDoc,
+        numeroDocumento: fNumDoc,
+        rol: isSuperAdmin ? fRol : ROLES.EMPLEADO, 
+        idSede: isSuperAdmin ? Number(fSede) : user.idSede, 
       };
 
-      // Validación del payload
-      if (!payload.nombreCompleto || !payload.email || !payload.password || !payload.idSede) {
-        // SuperAdmin ve el error "Sede"
-        // Admin ve error genérico (ya que su sede debería existir)
+      if (!payload.nombreCompleto || !payload.email || !payload.password || !payload.idSede || !payload.numeroDocumento) {
         enqueueSnackbar("Completa todos los campos obligatorios.", { variant: "warning" });
         return;
       }
@@ -250,12 +241,10 @@ export default function Usuarios() {
       load();
       enqueueSnackbar("Usuario creado", { variant: "success" });
     } catch (e) {
-      // El backend ya devuelve 403 Forbidden si el admin intenta crear otro rol
       const msg = e?.response?.data || e.message || "Error al crear";
       enqueueSnackbar(msg, { variant: "error" });
     }
   }
-  // --- FIN MODIFICADO ---
 
   function openEditDialog(u) {
     setEditing(u);
@@ -263,35 +252,35 @@ export default function Usuarios() {
     setERol(u.rol);
     setESede(String(u.idSede));
     setEActivo(u.activo);
+    setETipoDoc(u.tipoDocumento || "CC");
+    setENumDoc(u.numeroDocumento || "");
     setOpenEdit(true);
   }
 
   async function onEditSave() {
     try {
-      // El backend (UsuariosController) ya valida si el admin
-      // intenta editar campos/usuarios que no debe.
       await actualizarUsuario(editing.id, {
         nombreCompleto: eNombre,
         rol: eRol,
         idSede: Number(eSede),
+        tipoDocumento: eTipoDoc,
+        numeroDocumento: eNumDoc,
         activo: eActivo,
       });
       setOpenEdit(false);
       load();
       enqueueSnackbar("Usuario actualizado", { variant: "success" });
     } catch (e) {
-      // El backend devolverá 403 Forbidden si el admin viola las reglas
       enqueueSnackbar(e?.response?.data || "Error al actualizar", { variant: "error" });
     }
   }
 
   async function onToggle(u) {
-    // El backend (UsuariosController) valida si el admin puede hacer esto
     try {
-        await cambiarEstadoUsuario(u.id, !u.activo);
-        load();
+      await cambiarEstadoUsuario(u.id, !u.activo);
+      load();
     } catch (e) {
-        enqueueSnackbar(e?.response?.data || "Error al cambiar estado", { variant: "error" });
+      enqueueSnackbar(e?.response?.data || "Error al cambiar estado", { variant: "error" });
     }
   }
 
@@ -303,7 +292,6 @@ export default function Usuarios() {
   }
 
   async function onDelete(u) {
-    // El backend (UsuariosController) valida si el admin puede borrar
     if (!confirm(`¿Eliminar al usuario ${u.nombreCompleto}?`)) return;
     try {
       setDeletingId(u.id);
@@ -318,10 +306,8 @@ export default function Usuarios() {
     }
   }
 
-  // Generador simple de contraseñas (sin cambios)
   function genPassword(len = 10) {
-    const chars =
-      "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%";
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%";
     let s = "";
     for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
     return s;
@@ -338,7 +324,6 @@ export default function Usuarios() {
         </Button>
       </Stack>
 
-      {/* Filtros */}
       <Paper sx={{ p: 2, mb: 2 }}>
         <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems="center">
           <TextField
@@ -351,7 +336,6 @@ export default function Usuarios() {
             sx={{ minWidth: 260 }}
           />
           
-          {/* --- MODIFICADO: Filtro Sede (Select) solo para SuperAdmin --- */}
           {isSuperAdmin && (
             <FormControl sx={{ minWidth: 200 }}>
               <InputLabel id="sede-label">Sede</InputLabel>
@@ -374,7 +358,6 @@ export default function Usuarios() {
               </Select>
             </FormControl>
           )}
-          {/* --- FIN MODIFICADO --- */}
 
           <Box sx={{ flexGrow: 1 }} />
           <Button
@@ -392,7 +375,6 @@ export default function Usuarios() {
         </Stack>
       </Paper>
 
-      {/* Tabla (Sin cambios) */}
       <Paper elevation={3}>
         {err && <Alert severity="error">{String(err)}</Alert>}
         {loading ? (
@@ -408,6 +390,8 @@ export default function Usuarios() {
                     <TableCell>ID</TableCell>
                     <TableCell>Nombre</TableCell>
                     <TableCell>Email</TableCell>
+                    <TableCell>Tipo Doc.</TableCell>
+                    <TableCell>No. Documento</TableCell>
                     <TableCell>Rol</TableCell>
                     <TableCell>Sede</TableCell>
                     <TableCell>Estado</TableCell>
@@ -420,6 +404,8 @@ export default function Usuarios() {
                       <TableCell>{u.id}</TableCell>
                       <TableCell>{u.nombreCompleto}</TableCell>
                       <TableCell>{u.email}</TableCell>
+                      <TableCell>{u.tipoDocumento || "-"}</TableCell>
+                      <TableCell>{u.numeroDocumento || "-"}</TableCell>
                       <TableCell>
                         <Chip
                           size="small"
@@ -464,7 +450,7 @@ export default function Usuarios() {
                   ))}
                   {data.items.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} align="center" sx={{ py: 4, color: "text.secondary" }}>
+                      <TableCell colSpan={9} align="center" sx={{ py: 4, color: "text.secondary" }}>
                         No hay usuarios.
                       </TableCell>
                     </TableRow>
@@ -489,11 +475,35 @@ export default function Usuarios() {
         )}
       </Paper>
 
-      {/* Dialog Crear */}
       <Dialog open={openNew} onClose={() => setOpenNew(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Nuevo usuario</DialogTitle>
         <DialogContent dividers>
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
+            <Grid item xs={6}>
+              <FormControl fullWidth>
+                <InputLabel id="tipo-doc-label">Tipo Doc</InputLabel>
+                <Select
+                  labelId="tipo-doc-label"
+                  label="Tipo Doc"
+                  value={fTipoDoc}
+                  onChange={(e) => setFTipoDoc(e.target.value)}
+                >
+                  <MenuItem value="CC">Cédula de Ciudadanía</MenuItem>
+                  <MenuItem value="CE">Cédula de Extranjería</MenuItem>
+                  <MenuItem value="TI">Tarjeta de Identidad</MenuItem>
+                  <MenuItem value="PAS">Pasaporte</MenuItem>
+                  <MenuItem value="PEP">PEP</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={6}>
+              <TextField 
+                label="No. Documento" 
+                fullWidth 
+                value={fNumDoc} 
+                onChange={(e) => setFNumDoc(e.target.value)} 
+              />
+            </Grid>
             <Grid item xs={12}>
               <TextField
                 label="Nombre completo"
@@ -503,7 +513,12 @@ export default function Usuarios() {
               />
             </Grid>
             <Grid item xs={12}>
-              <TextField label="Email" fullWidth value={fEmail} onChange={(e) => setFEmail(e.target.value)} />
+              <TextField
+                label="Email"
+                fullWidth
+                value={fEmail}
+                onChange={(e) => setFEmail(e.target.value)}
+              />
             </Grid>
             <Grid item xs={12}>
               <TextField
@@ -514,8 +529,6 @@ export default function Usuarios() {
                 onChange={(e) => setFPassword(e.target.value)}
               />
             </Grid>
-            
-            {/* --- MODIFICADO: Campos solo para SuperAdmin --- */}
             {isSuperAdmin && (
               <>
                 <Grid item xs={6}>
@@ -529,7 +542,7 @@ export default function Usuarios() {
                     >
                       <MenuItem value="empleado">Empleado</MenuItem>
                       <MenuItem value="admin">Admin</MenuItem>
-                      <MenuItem value="superadmin">SuperAdmin</MenuItem> {/* SuperAdmin puede crear otros SuperAdmins */}
+                      <MenuItem value="superadmin">SuperAdmin</MenuItem> 
                     </Select>
                   </FormControl>
                 </Grid>
@@ -542,7 +555,6 @@ export default function Usuarios() {
                       value={fSede}
                       onChange={(e) => setFSede(e.target.value)}
                     >
-                      {/* SuperAdmin necesita la lista de sedes aquí */}
                       {sedes.map((s) => (
                         <MenuItem key={s.id} value={String(s.id)}>
                           {s.nombre}
@@ -553,8 +565,6 @@ export default function Usuarios() {
                 </Grid>
               </>
             )}
-             {/* --- FIN MODIFICADO --- */}
-             
           </Grid>
         </DialogContent>
         <DialogActions>
@@ -565,11 +575,35 @@ export default function Usuarios() {
         </DialogActions>
       </Dialog>
 
-      {/* Dialog Editar */}
       <Dialog open={openEdit} onClose={() => setOpenEdit(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Editar usuario</DialogTitle>
         <DialogContent dividers>
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
+            <Grid item xs={6}>
+              <FormControl fullWidth>
+                <InputLabel id="tipo-doc-e">Tipo Doc</InputLabel>
+                <Select
+                  labelId="tipo-doc-e"
+                  label="Tipo Doc"
+                  value={eTipoDoc}
+                  onChange={(e) => setETipoDoc(e.target.value)}
+                >
+                  <MenuItem value="CC">Cédula de Ciudadanía</MenuItem>
+                  <MenuItem value="CE">Cédula de Extranjería</MenuItem>
+                  <MenuItem value="TI">Tarjeta de Identidad</MenuItem>
+                  <MenuItem value="PAS">Pasaporte</MenuItem>
+                  <MenuItem value="PEP">PEP</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={6}>
+              <TextField 
+                label="No. Documento" 
+                fullWidth 
+                value={eNumDoc} 
+                onChange={(e) => setENumDoc(e.target.value)} 
+              />
+            </Grid>
             <Grid item xs={12}>
               <TextField
                 label="Nombre completo"
@@ -578,7 +612,6 @@ export default function Usuarios() {
                 onChange={(e) => setENombre(e.target.value)}
               />
             </Grid>
-            {/* --- MODIFICADO: Deshabilitar campos para Admin --- */}
             <Grid item xs={6}>
               <FormControl fullWidth>
                 <InputLabel id="rol-e">Rol</InputLabel>
@@ -587,7 +620,7 @@ export default function Usuarios() {
                   label="Rol"
                   value={eRol}
                   onChange={(e) => setERol(e.target.value)}
-                  disabled={!isSuperAdmin} // <-- Admin no puede cambiar rol
+                  disabled={!isSuperAdmin} 
                 >
                   <MenuItem value="empleado">Empleado</MenuItem>
                   <MenuItem value="admin">Admin</MenuItem>
@@ -603,9 +636,8 @@ export default function Usuarios() {
                   label="Sede"
                   value={eSede}
                   onChange={(e) => setESede(e.target.value)}
-                  disabled={!isSuperAdmin} // <-- Admin no puede cambiar sede
+                  disabled={!isSuperAdmin} 
                 >
-                  {/* SuperAdmin necesita la lista de sedes aquí */}
                   {sedes.map((s) => (
                     <MenuItem key={s.id} value={String(s.id)}>
                       {s.nombre}
@@ -614,7 +646,6 @@ export default function Usuarios() {
                 </Select>
               </FormControl>
             </Grid>
-            {/* --- FIN MODIFICADO --- */}
             <Grid item xs={12}>
               <FormControl fullWidth>
                 <InputLabel id="estado-e">Estado</InputLabel>
@@ -623,7 +654,6 @@ export default function Usuarios() {
                   label="Estado"
                   value={eActivo ? "1" : "0"}
                   onChange={(e) => setEActivo(e.target.value === "1")}
-                  // Un admin SÍ puede activar/desactivar usuarios de su sede (controlado en backend)
                 >
                   <MenuItem value="1">Activo</MenuItem>
                   <MenuItem value="0">Inactivo</MenuItem>
@@ -639,15 +669,13 @@ export default function Usuarios() {
           </Button>
         </DialogActions>
       </Dialog>
-
-      {/* Diálogo Reset contraseña (Sin cambios) */}
+      
       <Dialog open={resetOpen} onClose={() => setResetOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Resetear contraseña</DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ mb: 2 }}>
             Usuario: <strong>{pendingUser?.nombreCompleto}</strong> ({pendingUser?.email})
           </Typography>
-
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems="center" sx={{ mb: 1 }}>
             <TextField
               fullWidth
@@ -675,7 +703,6 @@ export default function Usuarios() {
               Generar
             </Button>
           </Stack>
-
           <Typography variant="caption" color="text.secondary">
             Confirma para establecer la nueva contraseña del usuario.
           </Typography>
@@ -689,7 +716,7 @@ export default function Usuarios() {
             onClick={async () => {
               try {
                 setResetting(true);
-                await resetPassword(pendingUser.id, newPass); // El backend valida el permiso
+                await resetPassword(pendingUser.id, newPass); 
                 enqueueSnackbar("Contraseña reestablecida", { variant: "success" });
                 setResetOpen(false);
                 setPendingUser(null);
@@ -711,4 +738,3 @@ export default function Usuarios() {
     </>
   );
 }
-
