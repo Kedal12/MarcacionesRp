@@ -7,15 +7,9 @@ import React, {
   useState,
 } from 'react';
 
-import { login as apiLogin, me as apiMe } from '@/src/api/auth';
-
-// ❌ ELIMINAMOS ESTA IMPORTACIÓN QUE CAUSABA EL ERROR (porque usaba SecureStore directo)
-// import { getToken, removeToken, storeToken } from '@/src/api/axios';
-
-// ✅ IMPORTAMOS TU NUEVA UTILIDAD (Asegúrate de que la ruta sea correcta)
+import { loginMobile as apiLoginMobile, me as apiMe } from '@/src/api/auth';
 import { tokenCache } from '@/src/utils/tokenStorage';
 
-// Definimos una clave constante para guardar el token
 const TOKEN_KEY = 'auth-token';
 
 // ===== Tipos =====
@@ -24,6 +18,7 @@ interface UserData {
   email: string;
   rol: 'admin' | 'empleado' | string;
   nombreCompleto: string;
+  numeroDocumento?: string;
   idSede?: number;
   sedeNombre?: string;
 }
@@ -32,7 +27,7 @@ interface AuthContextType {
   token: string | null;
   user: UserData | null;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<boolean>;
+  loginWithDocument: (numeroDocumento: string) => Promise<boolean>;
   logout: () => Promise<void>;
 }
 
@@ -59,23 +54,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     const bootstrapAsync = async () => {
       setAuthState((s) => ({ ...s, isLoading: true }));
       try {
-        // ✅ CAMBIO: Usamos tokenCache en lugar de getToken()
         const userToken = await tokenCache.getToken(TOKEN_KEY);
         
         if (userToken) {
           console.log('[Auth] Token encontrado, validando con /me...');
-          // Nota: Aquí asumimos que apiMe usa axios y el interceptor inyectará el token.
-          // (Ver nota al final sobre axios)
           const userData = await apiMe(); 
           setAuthState({ token: userToken, user: userData, isLoading: false });
-          console.log('[Auth] Usuario cargado:', userData.email);
+          console.log('[Auth] Usuario cargado:', userData.nombreCompleto);
         } else {
           console.log('[Auth] No se encontró token');
           setAuthState({ token: null, user: null, isLoading: false });
         }
       } catch (e: any) {
         console.error('[Auth] Error en bootstrap:', e?.message ?? e);
-        // ✅ CAMBIO: Usamos tokenCache
         await tokenCache.deleteToken(TOKEN_KEY);
         setAuthState({ token: null, user: null, isLoading: false });
       }
@@ -83,26 +74,36 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     bootstrapAsync();
   }, []);
 
-  // Acción: Login
-  const login = async (email: string, password: string): Promise<boolean> => {
+  // ✅ NUEVO: Login solo con número de documento
+  const loginWithDocument = async (numeroDocumento: string): Promise<boolean> => {
     setAuthState((s) => ({ ...s, isLoading: true, user: null }));
     try {
-      const { token } = await apiLogin(email, password);
-      if (!token) {
+      console.log('[Auth] Iniciando login con documento...');
+      
+      const response = await apiLoginMobile(numeroDocumento);
+      
+      if (!response.token) {
         throw new Error('No se recibió token del servidor.');
       }
 
-      // ✅ CAMBIO: Guardamos usando la utilidad compatible con Web/Móvil
-      await tokenCache.saveToken(TOKEN_KEY, token);
+      // Guardamos el token
+      await tokenCache.saveToken(TOKEN_KEY, response.token);
 
-      // Carga datos del usuario
-      const userData = await apiMe();
+      // Usamos los datos del usuario que vienen en la respuesta
+      const userData: UserData = {
+        id: response.usuario.id,
+        email: response.usuario.email,
+        rol: response.usuario.rol,
+        nombreCompleto: response.usuario.nombreCompleto,
+        numeroDocumento: response.usuario.numeroDocumento,
+        sedeNombre: response.usuario.sedeNombre ?? undefined,
+      };
 
-      setAuthState({ token, user: userData, isLoading: false });
+      setAuthState({ token: response.token, user: userData, isLoading: false });
+      console.log('[Auth] Login exitoso:', userData.nombreCompleto);
       return true;
     } catch (error: any) {
       console.error('[Auth] Error en login:', error?.message ?? error);
-      // ✅ CAMBIO: Borrado seguro
       await tokenCache.deleteToken(TOKEN_KEY);
       setAuthState({ token: null, user: null, isLoading: false });
       throw error;
@@ -113,9 +114,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const logout = async (): Promise<void> => {
     setAuthState((s) => ({ ...s, isLoading: true }));
     try {
-      // ✅ CAMBIO: Borrado seguro
       await tokenCache.deleteToken(TOKEN_KEY);
       setAuthState({ token: null, user: null, isLoading: false });
+      console.log('[Auth] Logout exitoso');
     } catch (e: any) {
       console.error('[Auth] Error en logout:', e?.message ?? e);
       setAuthState({ token: null, user: null, isLoading: false });
@@ -127,7 +128,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       token: authState.token,
       user: authState.user,
       isLoading: authState.isLoading,
-      login,
+      loginWithDocument,
       logout,
     }),
     [authState]

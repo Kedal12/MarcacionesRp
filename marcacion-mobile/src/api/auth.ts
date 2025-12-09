@@ -5,6 +5,19 @@ interface LoginResponse {
   token: string;
 }
 
+// ✅ NUEVO: Response para login mobile
+interface LoginMobileResponse {
+  token: string;
+  usuario: {
+    id: number;
+    nombreCompleto: string;
+    email: string;
+    rol: string;
+    numeroDocumento: string;
+    sedeNombre: string | null;
+  };
+}
+
 interface MeResponse {
   id: string | number;
   email: string;
@@ -28,7 +41,7 @@ interface UsuarioData {
 }
 
 /**
- * Realiza el login del usuario.
+ * Realiza el login del usuario (web - email + password).
  * @param email - Email del usuario.
  * @param password - Contraseña del usuario.
  * @returns Respuesta con el token JWT.
@@ -37,14 +50,35 @@ export const login = async (email: string, password: string): Promise<LoginRespo
   try {
     const { data } = await api.post<LoginResponse>('/api/auth/login', { email, password });
     
-    // Guarda el token en SecureStore
     if (data.token) {
       await storeToken(data.token);
     }
     
-    return data; // { token: "..." }
+    return data;
   } catch (error: any) {
     console.error("Error en login API:", error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
+ * ✅ NUEVO: Realiza el login móvil solo con número de documento.
+ * @param numeroDocumento - Número de documento del empleado.
+ * @returns Respuesta con el token JWT y datos del usuario.
+ */
+export const loginMobile = async (numeroDocumento: string): Promise<LoginMobileResponse> => {
+  try {
+    const { data } = await api.post<LoginMobileResponse>('/api/auth/login-mobile', { 
+      numeroDocumento: numeroDocumento.trim() 
+    });
+    
+    if (data.token) {
+      await storeToken(data.token);
+    }
+    
+    return data;
+  } catch (error: any) {
+    console.error("Error en loginMobile API:", error.response?.data || error.message);
     throw error;
   }
 };
@@ -55,9 +89,8 @@ export const login = async (email: string, password: string): Promise<LoginRespo
  */
 export const me = async (): Promise<MeResponse> => {
   try {
-    // El interceptor en axios.js añadirá automáticamente el token
     const { data } = await api.get<MeResponse>('/api/auth/me');
-    return data; // { id, email, rol, nombreCompleto, ... }
+    return data;
   } catch (error: any) {
     console.error("Error en me API:", error.response?.data || error.message);
     throw error;
@@ -72,7 +105,7 @@ export const me = async (): Promise<MeResponse> => {
 export const register = async (usuarioData: UsuarioData): Promise<RegisterResponse> => {
   try {
     const { data } = await api.post<RegisterResponse>('/api/auth/register', usuarioData);
-    return data; // { mensaje: "Usuario creado exitosamente.", id: ... }
+    return data;
   } catch (error: any) {
     console.error("Error en register API:", error.response?.data || error.message);
     throw error;

@@ -19,16 +19,35 @@ public record LoginDto(
     [Required] string Password
 );
 
+// ✅ NUEVO: DTO para login móvil
+public record LoginMobileDto(
+    [Required] string NumeroDocumento
+);
+
 public record ChangePasswordDto(
     [Required] string CurrentPassword,
     [Required, MinLength(6)] string NewPassword
 );
 
 public record LoginResponseDto(string Token);
+
+// ✅ NUEVO: Response extendido para mobile
+public record LoginMobileResponseDto(
+    string Token,
+    UsuarioMobileDto Usuario
+);
+
+public record UsuarioMobileDto(
+    int Id,
+    string NombreCompleto,
+    string Email,
+    string Rol,
+    string NumeroDocumento,
+    string? SedeNombre
+);
 // --- Fin DTOs ---
 
 [ApiController]
-//[Route("api/[controller]")]
 [Route("api/auth")]
 public class AuthController : ControllerBase
 {
@@ -146,6 +165,9 @@ public class AuthController : ControllerBase
         return StatusCode(201, new { mensaje = "Usuario creado exitosamente.", id = nuevoUsuario.Id });
     }
 
+    /// <summary>
+    /// Login tradicional con email y contraseña (para web/admin)
+    /// </summary>
     [AllowAnonymous]
     [HttpPost("login")]
     [EnableRateLimiting("loginPolicy")]
@@ -153,7 +175,6 @@ public class AuthController : ControllerBase
     {
         var email = loginDto.Email.Trim().ToLowerInvariant();
 
-        // 👇 Proyección mínima para evitar columnas sombra como "HorarioId"
         var user = await _context.Usuarios
             .AsNoTracking()
             .Where(u => u.Email == email && u.Activo)
@@ -174,7 +195,6 @@ public class AuthController : ControllerBase
             return Unauthorized("Credenciales inválidas.");
         }
 
-        // Generar token con los datos proyectados
         var token = GenerarJwtToken(
             id: user.Id,
             email: user.Email,
@@ -186,13 +206,71 @@ public class AuthController : ControllerBase
         return Ok(new LoginResponseDto(token));
     }
 
+    /// <summary>
+    /// ✅ NUEVO: Login móvil solo con número de documento (para empleados)
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("login-mobile")]
+    [EnableRateLimiting("loginPolicy")]
+    public async Task<ActionResult<LoginMobileResponseDto>> LoginMobile([FromBody] LoginMobileDto loginDto)
+    {
+        if (string.IsNullOrWhiteSpace(loginDto.NumeroDocumento))
+            return BadRequest("El número de documento es requerido.");
+
+        var documento = loginDto.NumeroDocumento.Trim();
+
+        var user = await _context.Usuarios
+            .AsNoTracking()
+            .Include(u => u.Sede)
+            .Where(u => u.NumeroDocumento == documento && u.Activo)
+            .Select(u => new
+            {
+                u.Id,
+                u.NombreCompleto,
+                u.Email,
+                u.Rol,
+                u.IdSede,
+                u.NumeroDocumento,
+                SedeNombre = u.Sede != null ? u.Sede.Nombre : null
+            })
+            .FirstOrDefaultAsync();
+
+        if (user == null)
+        {
+            // Delay para prevenir ataques de fuerza bruta
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            return Unauthorized("Documento no encontrado o usuario inactivo.");
+        }
+
+        // Generar token JWT
+        var token = GenerarJwtToken(
+            id: user.Id,
+            email: user.Email,
+            rol: user.Rol,
+            idSede: user.IdSede,
+            nombreCompleto: user.NombreCompleto
+        );
+
+        // Devolver token + datos del usuario
+        var usuarioDto = new UsuarioMobileDto(
+            user.Id,
+            user.NombreCompleto,
+            user.Email,
+            user.Rol,
+            user.NumeroDocumento,
+            user.SedeNombre
+        );
+
+        return Ok(new LoginMobileResponseDto(token, usuarioDto));
+    }
+
     private string GenerarJwtToken(int id, string email, string rol, int idSede, string nombreCompleto)
     {
         var claims = new[]
         {
             new Claim(ClaimTypes.NameIdentifier, id.ToString()),
             new Claim(ClaimTypes.Email, email),
-            new Claim(ClaimTypes.Role, rol),            // "superadmin", "admin" o "empleado"
+            new Claim(ClaimTypes.Role, rol),
             new Claim("sede", idSede.ToString()),
             new Claim(ClaimTypes.Name, nombreCompleto ?? string.Empty)
         };

@@ -1,45 +1,63 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useSnackbar } from "notistack";
 import {
   Paper, Stack, Typography, Button, IconButton, Chip, Box, Alert, CircularProgress,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip,
-  TextField, Grid, Select, MenuItem, FormControl, InputLabel
+  TextField, Grid, Select, MenuItem, FormControl, InputLabel, Autocomplete
 } from "@mui/material";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import AddIcon from "@mui/icons-material/Add";
 import ReplayIcon from "@mui/icons-material/Replay";
+import PersonIcon from "@mui/icons-material/Person";
 import { LocalizationProvider, DatePicker } from "@mui/x-date-pickers";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import dayjs from "dayjs";
 import utc from 'dayjs/plugin/utc';
-import { useAuth } from "../auth/AuthContext"; // Para obtener el ID del usuario
-import { getMisAusencias, crearAusencia, borrarAusencia } from "../api/ausencias"; // API
+import { useAuth } from "../auth/AuthContext";
+import { getMisAusencias, crearAusencia, borrarAusencia, getUsuariosSede, listarAusencias } from "../api/ausencias";
 
 dayjs.extend(utc);
 
-// Helper para formatear DateOnly (YYYY-MM-DD) para mostrar
 const formatDate = (dateOnlyString) => {
-    if (!dateOnlyString) return "-";
-    return dayjs.utc(dateOnlyString).format("DD/MM/YYYY");
+  if (!dateOnlyString) return "-";
+  return dayjs.utc(dateOnlyString).format("DD/MM/YYYY");
 };
 
-// Helper para dar color a los chips de estado
 const getStatusColor = (status) => {
-    switch (status?.toLowerCase()) {
-        case 'aprobada': return 'success';
-        case 'rechazada': return 'error';
-        case 'pendiente': return 'warning';
-        default: return 'default';
-    }
+  switch (status?.toLowerCase()) {
+    case 'aprobada': return 'success';
+    case 'rechazada': return 'error';
+    case 'pendiente': return 'warning';
+    default: return 'default';
+  }
 };
 
-// Tipos de ausencia comunes (podrías obtenerlos de la API si fueran dinámicos)
-const tiposAusencia = ["Vacaciones", "Enfermedad", "Permiso Personal", "Licencia Maternidad/Paternidad", "Incapacidad", "Otro"];
+const tiposAusencia = [
+  "Vacaciones", 
+  "Enfermedad", 
+  "Permiso Personal", 
+  "Licencia Maternidad/Paternidad", 
+  "Incapacidad", 
+  "Cita Médica",
+  "Calamidad Doméstica",
+  "Otro"
+];
 
+const ROLES = {
+  SUPERADMIN: "superadmin",
+  ADMIN: "admin",
+  EMPLEADO: "empleado"
+};
 
 export default function MisAusencias() {
   const { enqueueSnackbar } = useSnackbar();
-  const { user } = useAuth(); // Obtiene el usuario logueado ({ id, email, rol })
+  const { user } = useAuth();
+
+  // ✅ Verificar si es admin o superadmin
+  const isAdmin = useMemo(() => 
+    user?.rol === ROLES.ADMIN || user?.rol === ROLES.SUPERADMIN, 
+    [user]
+  );
 
   const [ausencias, setAusencias] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -47,42 +65,73 @@ export default function MisAusencias() {
   const [error, setError] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
 
-  // Estados para el formulario de nueva solicitud
+  // ✅ NUEVO: Lista de usuarios para el selector (solo admins)
+  const [usuariosSede, setUsuariosSede] = useState([]);
+  const [loadingUsuarios, setLoadingUsuarios] = useState(false);
+
+  // Estados para el formulario
+  const [usuarioSeleccionado, setUsuarioSeleccionado] = useState(null); // ✅ NUEVO
   const [tipo, setTipo] = useState("");
-  const [desde, setDesde] = useState(null); // dayjs object
-  const [hasta, setHasta] = useState(null); // dayjs object
+  const [desde, setDesde] = useState(null);
+  const [hasta, setHasta] = useState(null);
   const [observacion, setObservacion] = useState("");
 
-  // Carga las ausencias del usuario logueado
+  // ✅ NUEVO: Cargar usuarios de la sede si es admin
+  useEffect(() => {
+    if (isAdmin) {
+      setLoadingUsuarios(true);
+      getUsuariosSede()
+        .then(data => {
+          setUsuariosSede(data || []);
+          // Pre-seleccionar al usuario logueado
+          const usuarioActual = data?.find(u => u.id === parseInt(user?.id));
+          if (usuarioActual) {
+            setUsuarioSeleccionado(usuarioActual);
+          }
+        })
+        .catch(e => {
+          console.error("Error cargando usuarios:", e);
+          enqueueSnackbar("Error cargando lista de usuarios", { variant: "error" });
+        })
+        .finally(() => setLoadingUsuarios(false));
+    }
+  }, [isAdmin, user?.id, enqueueSnackbar]);
+
+  // Cargar ausencias
   const loadAusencias = () => {
-    if (!user?.id) return; // No cargar si no hay ID de usuario
+    if (!user?.id) return;
 
     setLoading(true);
     setError(null);
-    getMisAusencias(user.id)
+
+    // Si es admin, cargar todas las ausencias de la sede
+    // Si es empleado, cargar solo las suyas
+    const fetchAusencias = isAdmin 
+      ? listarAusencias({}) // Admin ve todas de su sede
+      : getMisAusencias(user.id); // Empleado ve solo las suyas
+
+    fetchAusencias
       .then(setAusencias)
       .catch(e => {
-        setError(e?.response?.data || e.message || "Error cargando tus ausencias");
+        setError(e?.response?.data || e.message || "Error cargando ausencias");
         setAusencias([]);
       })
       .finally(() => setLoading(false));
   };
 
-  // Carga inicial y si cambia el usuario (poco probable en esta vista)
   useEffect(() => {
     loadAusencias();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]); // Depende del ID del usuario
+  }, [user?.id, isAdmin]);
 
-  // Limpia el formulario
   const clearForm = () => {
     setTipo("");
     setDesde(null);
     setHasta(null);
     setObservacion("");
+    // No limpiar usuarioSeleccionado para facilitar múltiples creaciones
   };
 
-  // Maneja la creación de una nueva solicitud
   const handleCreate = async () => {
     if (!tipo || !desde || !hasta) {
       enqueueSnackbar("Selecciona tipo, fecha 'Desde' y fecha 'Hasta'.", { variant: "warning" });
@@ -93,45 +142,61 @@ export default function MisAusencias() {
       return;
     }
 
+    // ✅ NUEVO: Si es admin y seleccionó un usuario, usar ese ID
+    const idUsuarioDestino = isAdmin && usuarioSeleccionado 
+      ? usuarioSeleccionado.id 
+      : null;
+
     setSaving(true);
     const dto = {
-        tipo: tipo,
-        desde: desde, // La API formateará a YYYY-MM-DD
-        hasta: hasta,
-        observacion: observacion
+      idUsuario: idUsuarioDestino, // ✅ NUEVO
+      tipo: tipo,
+      desde: desde,
+      hasta: hasta,
+      observacion: observacion
     };
 
     try {
       await crearAusencia(dto);
-      enqueueSnackbar("Solicitud de ausencia enviada.", { variant: "success" });
+      
+      // Mensaje de éxito
+      const nombreUsuario = usuarioSeleccionado?.nombreCompleto || "";
+      const esParaOtroUsuario = idUsuarioDestino && idUsuarioDestino !== parseInt(user?.id);
+      
+      if (esParaOtroUsuario) {
+        enqueueSnackbar(`Ausencia registrada para ${nombreUsuario}. Pendiente de aprobación.`, { variant: "success" });
+      } else {
+        enqueueSnackbar("Solicitud de ausencia enviada. Pendiente de aprobación.", { variant: "success" });
+      }
+      
       clearForm();
-      loadAusencias(); // Recarga la lista
+      loadAusencias();
     } catch (e) {
-         if (e?.response?.status === 409) { // Conflicto por solapamiento
-           enqueueSnackbar(e?.response?.data || "Conflicto: Las fechas se solapan con otra solicitud.", { variant: "error" });
-         } else {
-           enqueueSnackbar(e?.response?.data || "Error al enviar la solicitud.", { variant: "error" });
-         }
+      if (e?.response?.status === 409) {
+        enqueueSnackbar(e?.response?.data || "Conflicto: Las fechas se solapan con otra solicitud.", { variant: "error" });
+      } else {
+        enqueueSnackbar(e?.response?.data || "Error al enviar la solicitud.", { variant: "error" });
+      }
     } finally {
       setSaving(false);
     }
   };
 
-  // Maneja la eliminación de una solicitud (ej. solo pendientes o rechazadas)
   const handleDelete = async (ausencia) => {
-    // Regla: Solo permitir borrar si está pendiente o rechazada
-    if (ausencia.estado !== 'pendiente' && ausencia.estado !== 'rechazada') {
-        enqueueSnackbar("Solo puedes eliminar solicitudes pendientes o rechazadas.", { variant: "info" });
-        return;
+    // Empleados solo pueden borrar sus propias pendientes/rechazadas
+    // Admins pueden borrar cualquiera de su sede
+    if (!isAdmin && ausencia.estado !== 'pendiente' && ausencia.estado !== 'rechazada') {
+      enqueueSnackbar("Solo puedes eliminar solicitudes pendientes o rechazadas.", { variant: "info" });
+      return;
     }
 
-    if (!confirm(`¿Eliminar la solicitud de ${ausencia.tipo} del ${formatDate(ausencia.desde)} al ${formatDate(ausencia.hasta)}?`)) return;
+    const nombreUsuario = ausencia.nombreUsuario || "este usuario";
+    if (!confirm(`¿Eliminar la ausencia de ${nombreUsuario} (${ausencia.tipo}) del ${formatDate(ausencia.desde)} al ${formatDate(ausencia.hasta)}?`)) return;
 
     setDeletingId(ausencia.id);
     try {
       await borrarAusencia(ausencia.id);
       enqueueSnackbar("Solicitud eliminada.", { variant: "success" });
-      // Actualiza la lista localmente para respuesta más rápida
       setAusencias(prev => prev.filter(a => a.id !== ausencia.id));
     } catch (e) {
       enqueueSnackbar(e?.response?.data || "Error al eliminar la solicitud.", { variant: "error" });
@@ -143,84 +208,134 @@ export default function MisAusencias() {
   return (
     <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="es">
       <Stack spacing={3}>
-        <Typography variant="h5" fontWeight={800}>Mis Solicitudes de Ausencia</Typography>
+        <Typography variant="h5" fontWeight={800}>
+          {isAdmin ? "Gestión de Ausencias" : "Mis Solicitudes de Ausencia"}
+        </Typography>
 
         {/* Formulario para Nueva Solicitud */}
         <Paper sx={{ p: 2 }}>
-          <Typography variant="h6" gutterBottom>Crear Nueva Solicitud</Typography>
+          <Typography variant="h6" gutterBottom>
+            {isAdmin ? "Registrar Nueva Ausencia" : "Crear Nueva Solicitud"}
+          </Typography>
           <Grid container spacing={2} alignItems="center">
-            <Grid item xs={12} sm={3}>
-               <FormControl fullWidth size="small">
-                 <InputLabel id="tipo-ausencia-label">Tipo *</InputLabel>
-                 <Select
-                   labelId="tipo-ausencia-label"
-                   value={tipo}
-                   label="Tipo *"
-                   onChange={(e) => setTipo(e.target.value)}
-                   disabled={saving}
-                 >
-                   {tiposAusencia.map(t => <MenuItem key={t} value={t.toLowerCase()}>{t}</MenuItem>)}
-                 </Select>
-               </FormControl>
+            
+            {/* ✅ NUEVO: Selector de Usuario (solo para admins) */}
+            {isAdmin && (
+              <Grid item xs={12} sm={4}>
+                <Autocomplete
+                  options={usuariosSede}
+                  getOptionLabel={(option) => `${option.nombreCompleto} (${option.numeroDocumento})`}
+                  value={usuarioSeleccionado}
+                  onChange={(_, newValue) => setUsuarioSeleccionado(newValue)}
+                  loading={loadingUsuarios}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Usuario *"
+                      size="small"
+                      InputProps={{
+                        ...params.InputProps,
+                        startAdornment: (
+                          <>
+                            <PersonIcon color="action" sx={{ mr: 1 }} />
+                            {params.InputProps.startAdornment}
+                          </>
+                        ),
+                      }}
+                    />
+                  )}
+                  disabled={saving || loadingUsuarios}
+                  isOptionEqualToValue={(option, value) => option.id === value?.id}
+                />
+              </Grid>
+            )}
+
+            <Grid item xs={12} sm={isAdmin ? 2 : 3}>
+              <FormControl fullWidth size="small">
+                <InputLabel id="tipo-ausencia-label">Tipo *</InputLabel>
+                <Select
+                  labelId="tipo-ausencia-label"
+                  value={tipo}
+                  label="Tipo *"
+                  onChange={(e) => setTipo(e.target.value)}
+                  disabled={saving}
+                >
+                  {tiposAusencia.map(t => (
+                    <MenuItem key={t} value={t.toLowerCase()}>{t}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
             </Grid>
+
             <Grid item xs={6} sm={2}>
               <DatePicker
                 label="Desde *"
                 value={desde}
                 onChange={setDesde}
                 slotProps={{ textField: { fullWidth: true, size: 'small' } }}
-                disablePast // No solicitar ausencias pasadas
                 disabled={saving}
               />
             </Grid>
+
             <Grid item xs={6} sm={2}>
               <DatePicker
                 label="Hasta *"
                 value={hasta}
                 onChange={setHasta}
                 slotProps={{ textField: { fullWidth: true, size: 'small' } }}
-                minDate={desde || undefined} // No antes que 'Desde'
+                minDate={desde || undefined}
                 disabled={saving}
               />
             </Grid>
-            <Grid item xs={12} sm={3}>
+
+            <Grid item xs={12} sm={isAdmin ? 4 : 3}>
               <TextField
                 label="Observación (Opcional)"
                 value={observacion}
                 onChange={(e) => setObservacion(e.target.value)}
                 fullWidth
                 size="small"
-                multiline
-                rows={1} // Se expandirá si es necesario con multiline
                 disabled={saving}
               />
             </Grid>
+
             <Grid item xs={12} sm={2}>
               <Button
                 variant="contained"
                 onClick={handleCreate}
-                disabled={saving || !tipo || !desde || !hasta || loading}
-                startIcon={saving ? <CircularProgress size={20} color="inherit"/> : <AddIcon />}
+                disabled={saving || !tipo || !desde || !hasta || loading || (isAdmin && !usuarioSeleccionado)}
+                startIcon={saving ? <CircularProgress size={20} color="inherit" /> : <AddIcon />}
                 fullWidth
               >
-                Enviar Solicitud
+                {isAdmin ? "Registrar" : "Enviar"}
               </Button>
             </Grid>
           </Grid>
+
+          {/* Nota informativa para admins */}
+          {isAdmin && (
+            <Alert severity="info" sx={{ mt: 2 }}>
+              <Typography variant="body2">
+                Las ausencias quedan en estado <strong>Pendiente</strong> hasta que RRHH las apruebe.
+              </Typography>
+            </Alert>
+          )}
         </Paper>
 
-        {/* Lista de Ausencias del Usuario */}
+        {/* Lista de Ausencias */}
         <Paper>
-           <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-             <Typography variant="h6">Mis Solicitudes</Typography>
-             <Tooltip title="Refrescar Lista">
-                 <span>
-                    <IconButton onClick={loadAusencias} disabled={loading}>
-                        <ReplayIcon />
-                    </IconButton>
-                 </span>
-             </Tooltip>
-           </Stack>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
+            <Typography variant="h6">
+              {isAdmin ? "Ausencias de la Sede" : "Mis Solicitudes"}
+            </Typography>
+            <Tooltip title="Refrescar Lista">
+              <span>
+                <IconButton onClick={loadAusencias} disabled={loading}>
+                  <ReplayIcon />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Stack>
 
           {error && <Alert severity="error" sx={{ m: 2 }}>{String(error)}</Alert>}
 
@@ -228,6 +343,8 @@ export default function MisAusencias() {
             <Table size="small">
               <TableHead>
                 <TableRow>
+                  {/* ✅ Mostrar columna Usuario solo para admins */}
+                  {isAdmin && <TableCell>Usuario</TableCell>}
                   <TableCell>Tipo</TableCell>
                   <TableCell>Desde</TableCell>
                   <TableCell>Hasta</TableCell>
@@ -239,13 +356,23 @@ export default function MisAusencias() {
               </TableHead>
               <TableBody>
                 {loading && (
-                  <TableRow><TableCell colSpan={7} align="center" sx={{ py: 4 }}><CircularProgress /></TableCell></TableRow>
+                  <TableRow>
+                    <TableCell colSpan={isAdmin ? 8 : 7} align="center" sx={{ py: 4 }}>
+                      <CircularProgress />
+                    </TableCell>
+                  </TableRow>
                 )}
                 {!loading && ausencias.length === 0 && (
-                  <TableRow><TableCell colSpan={7} align="center" sx={{ py: 4, color: "text.secondary" }}>No tienes solicitudes de ausencia.</TableCell></TableRow>
+                  <TableRow>
+                    <TableCell colSpan={isAdmin ? 8 : 7} align="center" sx={{ py: 4, color: "text.secondary" }}>
+                      No hay solicitudes de ausencia.
+                    </TableCell>
+                  </TableRow>
                 )}
                 {!loading && ausencias.map((a) => (
                   <TableRow key={a.id} hover>
+                    {/* ✅ Mostrar nombre de usuario solo para admins */}
+                    {isAdmin && <TableCell>{a.nombreUsuario || "N/A"}</TableCell>}
                     <TableCell sx={{ textTransform: 'capitalize' }}>{a.tipo}</TableCell>
                     <TableCell>{formatDate(a.desde)}</TableCell>
                     <TableCell>{formatDate(a.hasta)}</TableCell>
@@ -260,15 +387,15 @@ export default function MisAusencias() {
                     <TableCell>
                       <Tooltip title={a.observacion || ""}>
                         <Typography variant="body2" noWrap sx={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                           {a.observacion || "-"}
+                          {a.observacion || "-"}
                         </Typography>
                       </Tooltip>
                     </TableCell>
                     <TableCell>{dayjs(a.createdAt).format("DD/MM/YYYY HH:mm")}</TableCell>
                     <TableCell align="right">
-                      {/* Mostrar botón de borrar solo si está pendiente o rechazada */}
-                      {(a.estado === 'pendiente' || a.estado === 'rechazada') && (
-                        <Tooltip title="Eliminar Solicitud">
+                      {/* Admins pueden borrar cualquier ausencia, empleados solo pendientes/rechazadas propias */}
+                      {(isAdmin || a.estado === 'pendiente' || a.estado === 'rechazada') && (
+                        <Tooltip title="Eliminar">
                           <span>
                             <IconButton
                               size="small"
@@ -276,7 +403,7 @@ export default function MisAusencias() {
                               onClick={() => handleDelete(a)}
                               disabled={deletingId === a.id}
                             >
-                              {deletingId === a.id ? <CircularProgress size={20} color="inherit"/> : <DeleteForeverIcon fontSize="small"/>}
+                              {deletingId === a.id ? <CircularProgress size={20} color="inherit" /> : <DeleteForeverIcon fontSize="small" />}
                             </IconButton>
                           </span>
                         </Tooltip>
@@ -287,9 +414,7 @@ export default function MisAusencias() {
               </TableBody>
             </Table>
           </TableContainer>
-           {/* Podrías añadir paginación si el usuario puede tener muchas ausencias */}
         </Paper>
-
       </Stack>
     </LocalizationProvider>
   );
