@@ -6,16 +6,17 @@ import {
   TableHead, TableRow, TablePagination, Stack, Chip, Box,
   FormControl, InputLabel, Select, MenuItem, Button, CircularProgress,
   Alert, TextField
-} from "@mui/material"; // Agregué TextField aquí si faltaba
+} from "@mui/material";
 import { DatePicker, LocalizationProvider } from "@mui/x-date-pickers";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import dayjs from "dayjs";
-import utc from 'dayjs/plugin/utc'; // Asegúrate de tener esto
+import utc from 'dayjs/plugin/utc';
 import { fmt } from "../utils/date";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import ReplayIcon from "@mui/icons-material/Replay";
-import SearchIcon from "@mui/icons-material/Search"; // Icono opcional
+import SearchIcon from "@mui/icons-material/Search";
 import { useAuth } from "../auth/AuthContext";
+import api from "../api/axios"; // ✅ Importar axios para el export
 
 dayjs.extend(utc);
 
@@ -38,9 +39,7 @@ export default function MarcacionesList() {
   const [tipo, setTipo] = useState("");
   const [desde, setDesde] = useState(null);
   const [hasta, setHasta] = useState(null);
-  
-  // CAMBIO 1: Reemplazamos idUsuario por numeroDocumento
-  const [numeroDocumento, setNumeroDocumento] = useState(""); 
+  const [numeroDocumento, setNumeroDocumento] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [loadingSedes, setLoadingSedes] = useState(false);
@@ -73,23 +72,19 @@ export default function MarcacionesList() {
     };
     if (idSede) p.idSede = Number(idSede);
     if (tipo) p.tipo = tipo;
-    
-    // CAMBIO 2: Enviamos el documento
     if (numeroDocumento.trim()) p.numeroDocumento = numeroDocumento.trim();
-
     if (desde) p.desde = dayjs(desde).startOf('day').utc().toISOString();
     if (hasta) p.hasta = dayjs(hasta).endOf("day").utc().toISOString();
 
     return p;
-  }, [page, rowsPerPage, idSede, tipo, desde, hasta, numeroDocumento]); // agregamos numeroDocumento a dep
+  }, [page, rowsPerPage, idSede, tipo, desde, hasta, numeroDocumento]);
 
   // Cargar datos
   useEffect(() => {
     if (user?.rol === ROLES.ADMIN && !idSede) return;
     
-    // Pequeño debounce manual para no saturar si escribe rápido (opcional)
     const timer = setTimeout(() => {
-        loadData();
+      loadData();
     }, 300);
 
     return () => clearTimeout(timer);
@@ -97,7 +92,8 @@ export default function MarcacionesList() {
   }, [query, user?.rol, idSede]);
 
   function loadData() {
-    setLoading(true); setErr(null);
+    setLoading(true);
+    setErr(null);
     getMarcaciones(query)
       .then(setData)
       .catch((e) => setErr(e?.response?.data || e?.message || "Error cargando marcaciones"))
@@ -108,52 +104,48 @@ export default function MarcacionesList() {
     if (!isSuperAdmin) setIdSede(String(user.idSede || ""));
     else setIdSede("");
     
-    setTipo(""); setDesde(null); setHasta(null); 
-    setNumeroDocumento(""); // Limpiamos documento
+    setTipo("");
+    setDesde(null);
+    setHasta(null);
+    setNumeroDocumento("");
     setPage(0);
   }
 
-  // Exportar CSV
-  function toCsvValue(v) {
-    if (v === null || v === undefined) return '""';
-    const s = String(v).replace(/"/g, '""');
-    return `"${s}"`;
-  }
-
-  async function exportCsv() {
+  // ✅ NUEVO: Exportar a Excel (en lugar de CSV)
+  async function exportExcel() {
     try {
       setExporting(true);
-      const { items } = await getMarcaciones({ ...query, page: 1, pageSize: 10000 });
 
-      // CAMBIO 3: Headers del CSV con Nombre y Documento
-      const header = ["Id", "Documento", "Nombre", "Fecha", "Tipo", "Latitud", "Longitud"];
-      const rows = items.map(m => ([
-        m.id,
-        m.documentoUsuario || "", // Usamos las props nuevas
-        m.nombreUsuario || "",    // Usamos las props nuevas
-        fmt(m.fechaHora),
-        m.tipo,
-        m.latitud,
-        m.longitud
-      ]));
+      // Construir query params para el endpoint de Excel
+      const params = new URLSearchParams();
+      if (idSede) params.append("idSede", idSede);
+      if (tipo) params.append("tipo", tipo);
+      if (numeroDocumento.trim()) params.append("numeroDocumento", numeroDocumento.trim());
+      if (desde) params.append("desde", dayjs(desde).startOf('day').utc().toISOString());
+      if (hasta) params.append("hasta", dayjs(hasta).endOf("day").utc().toISOString());
 
-      const lines = [header, ...rows]
-        .map(r => r.map(toCsvValue).join(","))
-        .join("\n");
+      // Llamar al endpoint de Excel con responseType blob
+      const response = await api.get(`/api/marcaciones/exportar-excel?${params.toString()}`, {
+        responseType: 'blob'
+      });
 
-      const csvWithBom = "\uFEFF" + lines;
-      const blob = new Blob([csvWithBom], { type: "text/csv;charset=utf-8;" });
+      // Crear enlace de descarga
+      const blob = new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      const today = new Date().toISOString().slice(0,10);
+      const today = new Date().toISOString().slice(0, 10);
       a.href = url;
-      a.download = `marcaciones_${today}.csv`;
+      a.download = `Marcaciones_${today}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+
     } catch (e) {
-      alert(e?.message || "No se pudo exportar");
+      console.error("Error exportando Excel:", e);
+      alert(e?.response?.data?.message || e?.message || "No se pudo exportar el Excel");
     } finally {
       setExporting(false);
     }
@@ -167,8 +159,15 @@ export default function MarcacionesList() {
           <Button variant="outlined" startIcon={<ReplayIcon />} onClick={loadData} disabled={loading}>
             Refrescar
           </Button>
-          <Button variant="contained" startIcon={<FileDownloadIcon />} onClick={exportCsv} disabled={exporting || loading}>
-            {exporting ? "Exportando..." : "Exportar CSV"}
+          {/* ✅ CAMBIO: Ahora exporta Excel */}
+          <Button 
+            variant="contained" 
+            startIcon={<FileDownloadIcon />} 
+            onClick={exportExcel} 
+            disabled={exporting || loading}
+            color="success"
+          >
+            {exporting ? "Exportando..." : "Exportar Excel"}
           </Button>
         </Stack>
       </Stack>
@@ -182,9 +181,10 @@ export default function MarcacionesList() {
               <FormControl sx={{ minWidth: 160 }}>
                 <InputLabel id="sede-label">Sede</InputLabel>
                 <Select
-                  labelId="sede-label" label="Sede"
+                  labelId="sede-label"
+                  label="Sede"
                   value={idSede}
-                  onChange={(e)=>{ setIdSede(e.target.value); setPage(0); }}
+                  onChange={(e) => { setIdSede(e.target.value); setPage(0); }}
                   disabled={loadingSedes || loading}
                 >
                   <MenuItem value="">Todas</MenuItem>
@@ -196,8 +196,10 @@ export default function MarcacionesList() {
             <FormControl sx={{ minWidth: 160 }}>
               <InputLabel id="tipo-label">Tipo</InputLabel>
               <Select
-                labelId="tipo-label" label="Tipo"
-                value={tipo} onChange={(e)=>{ setTipo(e.target.value); setPage(0); }}
+                labelId="tipo-label"
+                label="Tipo"
+                value={tipo}
+                onChange={(e) => { setTipo(e.target.value); setPage(0); }}
               >
                 <MenuItem value="">Todos</MenuItem>
                 <MenuItem value="entrada">Entrada</MenuItem>
@@ -205,26 +207,27 @@ export default function MarcacionesList() {
               </Select>
             </FormControl>
 
-            {/* CAMBIO 4: Input de Texto para Documento */}
             <TextField
               label="Buscar Documento"
               value={numeroDocumento}
-              onChange={(e)=>{ setNumeroDocumento(e.target.value); setPage(0); }}
+              onChange={(e) => { setNumeroDocumento(e.target.value); setPage(0); }}
               sx={{ width: 200 }}
               placeholder="Ej: 1001"
               InputProps={{
-                  startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />
+                startAdornment: <SearchIcon color="action" sx={{ mr: 1 }} />
               }}
             />
 
             <DatePicker
-              label="Desde" value={desde}
-              onChange={(v)=>{ setDesde(v); setPage(0); }}
+              label="Desde"
+              value={desde}
+              onChange={(v) => { setDesde(v); setPage(0); }}
               slotProps={{ textField: { size: "medium" } }}
             />
             <DatePicker
-              label="Hasta" value={hasta}
-              onChange={(v)=>{ setHasta(v); setPage(0); }}
+              label="Hasta"
+              value={hasta}
+              onChange={(v) => { setHasta(v); setPage(0); }}
               slotProps={{ textField: { size: "medium" } }}
             />
 
@@ -250,24 +253,20 @@ export default function MarcacionesList() {
                 <TableHead>
                   <TableRow>
                     <TableCell>ID</TableCell>
-                    {/* CAMBIO 5: Nuevas columnas */}
                     <TableCell><strong>Documento</strong></TableCell>
                     <TableCell><strong>Nombre</strong></TableCell>
+                    <TableCell><strong>Sede</strong></TableCell>
                     <TableCell>Fecha</TableCell>
                     <TableCell>Tipo</TableCell>
-                    <TableCell>Lat</TableCell>
-                    <TableCell>Lon</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {data.items.map((m) => (
                     <TableRow key={m.id} hover>
                       <TableCell>{m.id}</TableCell>
-                      
-                      {/* CAMBIO 6: Mostrar los datos del usuario */}
                       <TableCell>{m.documentoUsuario || "-"}</TableCell>
                       <TableCell>{m.nombreUsuario || "Desconocido"}</TableCell>
-
+                      <TableCell>{m.nombreSede || "Sin sede"}</TableCell>
                       <TableCell>{fmt(m.fechaHora)}</TableCell>
                       <TableCell>
                         <Chip
@@ -276,13 +275,11 @@ export default function MarcacionesList() {
                           size="small"
                         />
                       </TableCell>
-                      <TableCell>{m.latitud}</TableCell>
-                      <TableCell>{m.longitud}</TableCell>
                     </TableRow>
                   ))}
                   {data.items.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} align="center" sx={{ py: 4, color: "text.secondary" }}>
+                      <TableCell colSpan={6} align="center" sx={{ py: 4, color: "text.secondary" }}>
                         No hay registros.
                       </TableCell>
                     </TableRow>
@@ -298,7 +295,7 @@ export default function MarcacionesList() {
               onPageChange={(_, p) => setPage(p)}
               rowsPerPage={rowsPerPage}
               onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
-              rowsPerPageOptions={[5,10,20,50]}
+              rowsPerPageOptions={[5, 10, 20, 50]}
               labelRowsPerPage="Filas por página"
             />
           </>

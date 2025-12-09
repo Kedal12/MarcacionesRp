@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+using ClosedXML.Excel;
 
 namespace MarcacionAPI.Controllers;
 
@@ -108,6 +109,150 @@ public class UsuariosController : ControllerBase
             NumeroDocumento = u.NumeroDocumento ?? "",
             Activo = u.Activo
         });
+    }
+
+    // ===========================================
+    // ✅ NUEVO: EXPORTAR USUARIOS A EXCEL
+    // ===========================================
+    [HttpGet("exportar-excel")]
+    public async Task<IActionResult> ExportarExcel(
+        [FromQuery] string? search,
+        [FromQuery] int? idSede)
+    {
+        try
+        {
+            var q = _context.Usuarios
+                .Include(u => u.Sede)
+                .AsNoTracking()
+                .Where(u => u.Activo)
+                .AsQueryable();
+
+            // Filtro por sede
+            if (!User.IsSuperAdmin())
+            {
+                var sedeId = User.GetSedeId() ?? 0;
+                q = q.Where(u => u.IdSede == sedeId);
+            }
+            else if (idSede.HasValue && idSede.Value > 0)
+            {
+                q = q.Where(u => u.IdSede == idSede.Value);
+            }
+
+            // Filtro de búsqueda
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var s = search.Trim().ToLower();
+                q = q.Where(u =>
+                    u.NombreCompleto.ToLower().Contains(s) ||
+                    u.Email.ToLower().Contains(s));
+            }
+
+            var datos = await q
+                .OrderBy(u => u.NombreCompleto)
+                .Select(u => new
+                {
+                    u.Id,
+                    u.NombreCompleto,
+                    u.Email,
+                    TipoDocumento = u.TipoDocumento ?? "-",
+                    NumeroDocumento = u.NumeroDocumento ?? "-",
+                    u.Rol,
+                    SedeNombre = u.Sede != null ? u.Sede.Nombre : "Sin sede",
+                    u.Activo
+                })
+                .ToListAsync();
+
+            if (!datos.Any())
+            {
+                return NotFound("No se encontraron usuarios para exportar");
+            }
+
+            // Crear Excel con ClosedXML
+            using var workbook = new XLWorkbook();
+            var worksheet = workbook.Worksheets.Add("Usuarios");
+
+            // Encabezados
+            worksheet.Cell(1, 1).Value = "ID";
+            worksheet.Cell(1, 2).Value = "Nombre Completo";
+            worksheet.Cell(1, 3).Value = "Email";
+            worksheet.Cell(1, 4).Value = "Tipo Doc.";
+            worksheet.Cell(1, 5).Value = "No. Documento";
+            worksheet.Cell(1, 6).Value = "Rol";
+            worksheet.Cell(1, 7).Value = "Sede";
+            worksheet.Cell(1, 8).Value = "Estado";
+
+            // Estilo encabezados
+            var headerRange = worksheet.Range(1, 1, 1, 8);
+            headerRange.Style.Font.Bold = true;
+            headerRange.Style.Fill.BackgroundColor = XLColor.FromArgb(79, 129, 189);
+            headerRange.Style.Font.FontColor = XLColor.White;
+            headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+
+            // Llenar datos
+            int row = 2;
+            foreach (var u in datos)
+            {
+                worksheet.Cell(row, 1).Value = u.Id;
+                worksheet.Cell(row, 2).Value = u.NombreCompleto;
+                worksheet.Cell(row, 3).Value = u.Email;
+                worksheet.Cell(row, 4).Value = u.TipoDocumento;
+                worksheet.Cell(row, 5).Value = u.NumeroDocumento;
+                worksheet.Cell(row, 6).Value = u.Rol;
+                worksheet.Cell(row, 7).Value = u.SedeNombre;
+                worksheet.Cell(row, 8).Value = u.Activo ? "Activo" : "Inactivo";
+
+                // Formato condicional para rol
+                if (u.Rol == "superadmin")
+                {
+                    worksheet.Cell(row, 6).Style.Font.FontColor = XLColor.Purple;
+                    worksheet.Cell(row, 6).Style.Font.Bold = true;
+                }
+                else if (u.Rol == "admin")
+                {
+                    worksheet.Cell(row, 6).Style.Font.FontColor = XLColor.Blue;
+                    worksheet.Cell(row, 6).Style.Font.Bold = true;
+                }
+
+                // Formato condicional para estado
+                if (u.Activo)
+                {
+                    worksheet.Cell(row, 8).Style.Font.FontColor = XLColor.Green;
+                }
+                else
+                {
+                    worksheet.Cell(row, 8).Style.Font.FontColor = XLColor.Red;
+                }
+
+                row++;
+            }
+
+            // Ajustar columnas
+            worksheet.Columns().AdjustToContents();
+
+            // Agregar bordes
+            var dataRange = worksheet.Range(1, 1, row - 1, 8);
+            dataRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+            dataRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+
+            // Generar archivo
+            using var stream = new MemoryStream();
+            workbook.SaveAs(stream);
+            stream.Position = 0;
+
+            var fileName = $"Usuarios_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
+
+            return File(
+                stream.ToArray(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                fileName
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error generando Excel de usuarios: {ex.Message}");
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            return StatusCode(500, $"Error al generar el Excel: {ex.Message}");
+        }
     }
 
     // POST /api/usuarios/{id}/reset-password

@@ -9,6 +9,7 @@ import {
   resetPassword,
 } from "../api/usuarios";
 import { getSedes } from "../api/sedes";
+import api from "../api/axios"; // ✅ Importar axios para el export Excel
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import ReplayIcon from "@mui/icons-material/Replay";
 import {
@@ -102,56 +103,39 @@ export default function Usuarios() {
 
   const { enqueueSnackbar } = useSnackbar();
 
-  function toCsvValue(v) {
-    if (v === null || v === undefined) return '""';
-    const s = String(v).replace(/"/g, '""');
-    return `"${s}"`;
-  }
-
-  async function fetchAllUsuarios() {
-    const size = 500;
-    let p = 1;
-    const all = [];
-    while (true) {
-      const res = await getUsuarios({ ...query, page: p, pageSize: size });
-      all.push(...res.items);
-      if (res.items.length < size) break;
-      p++;
-    }
-    return all;
-  }
-
-  async function exportCsvUsuarios() {
+  // ✅ NUEVO: Exportar a Excel (en lugar de CSV)
+  async function exportExcel() {
     try {
       setExporting(true);
-      const items = await fetchAllUsuarios();
-      // ✅ AÑADIDO: Incluir documento en CSV
-      const header = ["Id", "Nombre", "Email", "Tipo Doc", "No. Doc", "Rol", "Sede", "Activo"];
-      const rows = items.map((u) => [
-        u.id,
-        u.nombreCompleto,
-        u.email,
-        u.tipoDocumento || "-",
-        u.numeroDocumento || "-",
-        u.rol,
-        u.sedeNombre ?? u.idSede,
-        u.activo ? "Sí" : "No",
-      ]);
-      const csv = [header, ...rows].map((r) => r.map(toCsvValue).join(",")).join("\n");
-      const csvWithBom = "\uFEFF" + csv;
-      const blob = new Blob([csvWithBom], { type: "text/csv;charset=utf-8;" });
+
+      // Construir query params para el endpoint de Excel
+      const params = new URLSearchParams();
+      if (search.trim()) params.append("search", search.trim());
+      if (idSede) params.append("idSede", idSede);
+
+      // Llamar al endpoint de Excel con responseType blob
+      const response = await api.get(`/api/usuarios/exportar-excel?${params.toString()}`, {
+        responseType: 'blob'
+      });
+
+      // Crear enlace de descarga
+      const blob = new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       const today = new Date().toISOString().slice(0, 10);
       a.href = url;
-      a.download = `usuarios_${today}.csv`;
+      a.download = `Usuarios_${today}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      enqueueSnackbar("Usuarios exportados", { variant: "success" });
+
+      enqueueSnackbar("Usuarios exportados a Excel", { variant: "success" });
     } catch (e) {
-      enqueueSnackbar(e?.message || "No se pudo exportar", { variant: "error" });
+      console.error("Error exportando Excel:", e);
+      enqueueSnackbar(e?.response?.data?.message || e?.message || "No se pudo exportar el Excel", { variant: "error" });
     } finally {
       setExporting(false);
     }
@@ -360,14 +344,16 @@ export default function Usuarios() {
           )}
 
           <Box sx={{ flexGrow: 1 }} />
+          {/* ✅ CAMBIO: Ahora exporta Excel */}
           <Button
-            variant="outlined"
-            startIcon={exporting ? <CircularProgress size={20} /> : <FileDownloadIcon />}
-            onClick={exportCsvUsuarios}
+            variant="contained"
+            color="success"
+            startIcon={exporting ? <CircularProgress size={20} color="inherit" /> : <FileDownloadIcon />}
+            onClick={exportExcel}
             disabled={exporting || loading}
-            sx={{ minWidth: 120 }}
+            sx={{ minWidth: 140 }}
           >
-            {exporting ? "Exportando..." : "Exportar"}
+            {exporting ? "Exportando..." : "Exportar Excel"}
           </Button>
           <IconButton onClick={load} disabled={loading}>
             <ReplayIcon />

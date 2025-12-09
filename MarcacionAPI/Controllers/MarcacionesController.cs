@@ -5,9 +5,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
-using MarcacionAPI.Utils; // Asegúrate de que Geo, Paging y UserExtensions estén aquí
+using MarcacionAPI.Utils;
+using ClosedXML.Excel;
 
-[Authorize] // Autorización general
+[Authorize]
 [ApiController]
 [Route("api/[controller]")]
 public class MarcacionesController : ControllerBase
@@ -154,7 +155,7 @@ public class MarcacionesController : ControllerBase
     }
 
     // ===========================================
-    // 2) Mis marcaciones (historial y “última marca”) - VERSIÓN CORREGIDA
+    // 2) Mis marcaciones (historial y "última marca") - VERSIÓN CORREGIDA
     // ===========================================
     [Authorize]
     [HttpGet("mis")]
@@ -169,7 +170,7 @@ public class MarcacionesController : ControllerBase
         if (userId is null) return Unauthorized();
 
         var tz = TzBogota();
-        // ⬇️ “hoy” en Bogotá → a UTC (Lógica de filtrado no cambia)
+        // ⬇️ "hoy" en Bogotá → a UTC (Lógica de filtrado no cambia)
         var nowUtc = DateTimeOffset.UtcNow;
         var nowBog = TimeZoneInfo.ConvertTime(nowUtc, tz);
         var startBog = new DateTimeOffset(nowBog.Date, tz.GetUtcOffset(nowBog));
@@ -435,8 +436,8 @@ public class MarcacionesController : ControllerBase
     [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
     public async Task<IActionResult> Listar(
        [FromQuery] int? idSede,
-       [FromQuery] int? idUsuario, // Lo mantenemos por compatibilidad, pero usaremos el documento
-       [FromQuery] string? numeroDocumento, // <--- NUEVO PARÁMETRO
+       [FromQuery] int? idUsuario,
+       [FromQuery] string? numeroDocumento,
        [FromQuery] DateTimeOffset? desde,
        [FromQuery] DateTimeOffset? hasta,
        [FromQuery] string? tipo,
@@ -448,7 +449,8 @@ public class MarcacionesController : ControllerBase
 
         // 1. Iniciamos la query incluyendo al Usuario para poder filtrar y mostrar nombre
         var query = _context.Marcaciones.AsNoTracking()
-                            .Include(m => m.Usuario) // <--- IMPORTANTE
+                            .Include(m => m.Usuario)
+                                .ThenInclude(u => u.Sede) // ✅ Incluir la Sede del Usuario
                             .AsQueryable();
 
         var sedeIdFiltrada = idSede;
@@ -495,9 +497,12 @@ public class MarcacionesController : ControllerBase
                 m.Id,
                 m.IdUsuario,
 
-                // 3. NUEVOS CAMPOS PARA EL FRONTEND
+                // 3. CAMPOS PARA EL FRONTEND
                 NombreUsuario = m.Usuario.NombreCompleto,
                 DocumentoUsuario = m.Usuario.NumeroDocumento,
+
+                // ✅ NUEVO: Nombre de la Sede
+                NombreSede = m.Usuario.Sede != null ? m.Usuario.Sede.Nombre : "Sin sede",
 
                 m.Tipo,
                 Latitud = m.LatitudMarcacion,
@@ -517,5 +522,144 @@ public class MarcacionesController : ControllerBase
             .ToListAsync();
 
         return Ok(new PagedResponse<object>(items, total, page, pageSize));
+    }
+
+    // ===========================================
+    // 5) ✅ EXPORTAR MARCACIONES A EXCEL (SIN LAT/LON)
+    // ===========================================
+    [HttpGet("exportar-excel")]
+    [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
+    public async Task<IActionResult> ExportarExcel(
+        [FromQuery] int? idSede,
+        [FromQuery] string? numeroDocumento,
+        [FromQuery] DateTimeOffset? desde,
+        [FromQuery] DateTimeOffset? hasta,
+        [FromQuery] string? tipo)
+    {
+        try
+        {
+            var tz = TzBogota();
+
+            var query = _context.Marcaciones.AsNoTracking()
+                                .Include(m => m.Usuario)
+                                    .ThenInclude(u => u.Sede)
+                                .AsQueryable();
+
+            var sedeIdFiltrada = idSede;
+            if (!User.IsSuperAdmin())
+            {
+                sedeIdFiltrada = User.GetSedeId() ?? 0;
+            }
+
+            if (!string.IsNullOrWhiteSpace(numeroDocumento))
+            {
+                var docTrim = numeroDocumento.Trim();
+                query = query.Where(m => m.Usuario.NumeroDocumento == docTrim);
+            }
+
+            if (!string.IsNullOrWhiteSpace(tipo))
+            {
+                var t = tipo.Trim().ToLowerInvariant();
+                if (t is "entrada" or "salida")
+                    query = query.Where(m => m.Tipo == t);
+            }
+
+            if (desde.HasValue) query = query.Where(m => m.FechaHora >= desde.Value);
+            if (hasta.HasValue) query = query.Where(m => m.FechaHora <= hasta.Value);
+
+            if (sedeIdFiltrada.HasValue && sedeIdFiltrada.Value > 0)
+            {
+                query = query.Where(m => m.Usuario.IdSede == sedeIdFiltrada.Value);
+            }
+
+            var datos = await query
+                .OrderByDescending(m => m.FechaHora)
+                .Select(m => new
+                {
+                    m.Id,
+                    NombreUsuario = m.Usuario.NombreCompleto,
+                    DocumentoUsuario = m.Usuario.NumeroDocumento,
+                    NombreSede = m.Usuario.Sede != null ? m.Usuario.Sede.Nombre : "Sin sede",
+                    m.Tipo,
+                    m.FechaHora
+                })
+                .ToListAsync();
+
+            if (!datos.Any())
+            {
+                return NotFound("No se encontraron registros para exportar");
+            }
+
+            using var workbook = new XLWorkbook();
+            var worksheet = workbook.Worksheets.Add("Marcaciones");
+
+            // ✅ Encabezados SIN Latitud y Longitud
+            worksheet.Cell(1, 1).Value = "ID";
+            worksheet.Cell(1, 2).Value = "Documento";
+            worksheet.Cell(1, 3).Value = "Usuario";
+            worksheet.Cell(1, 4).Value = "Sede";
+            worksheet.Cell(1, 5).Value = "Fecha";
+            worksheet.Cell(1, 6).Value = "Hora";
+            worksheet.Cell(1, 7).Value = "Tipo";
+
+            // Estilo encabezados (ahora son 7 columnas)
+            var headerRange = worksheet.Range(1, 1, 1, 7);
+            headerRange.Style.Font.Bold = true;
+            headerRange.Style.Fill.BackgroundColor = XLColor.FromArgb(79, 129, 189);
+            headerRange.Style.Font.FontColor = XLColor.White;
+            headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+
+            int row = 2;
+            foreach (var m in datos)
+            {
+                var fechaLocal = TimeZoneInfo.ConvertTime(m.FechaHora, tz);
+
+                worksheet.Cell(row, 1).Value = m.Id;
+                worksheet.Cell(row, 2).Value = m.DocumentoUsuario ?? "-";
+                worksheet.Cell(row, 3).Value = m.NombreUsuario ?? "Desconocido";
+                worksheet.Cell(row, 4).Value = m.NombreSede;
+                worksheet.Cell(row, 5).Value = fechaLocal.ToString("dd/MM/yyyy");
+                worksheet.Cell(row, 6).Value = fechaLocal.ToString("HH:mm:ss");
+                worksheet.Cell(row, 7).Value = m.Tipo;
+
+                // Formato condicional para tipo
+                if (m.Tipo == "entrada")
+                {
+                    worksheet.Cell(row, 7).Style.Font.FontColor = XLColor.Green;
+                    worksheet.Cell(row, 7).Style.Font.Bold = true;
+                }
+                else if (m.Tipo == "salida")
+                {
+                    worksheet.Cell(row, 7).Style.Font.FontColor = XLColor.DarkOrange;
+                    worksheet.Cell(row, 7).Style.Font.Bold = true;
+                }
+
+                row++;
+            }
+
+            worksheet.Columns().AdjustToContents();
+
+            // Bordes (ahora son 7 columnas)
+            var dataRange = worksheet.Range(1, 1, row - 1, 7);
+            dataRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+            dataRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+
+            using var stream = new MemoryStream();
+            workbook.SaveAs(stream);
+            stream.Position = 0;
+
+            var fileName = $"Marcaciones_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
+
+            return File(
+                stream.ToArray(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                fileName
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error generando Excel de marcaciones: {ex.Message}");
+            return StatusCode(500, $"Error al generar el Excel: {ex.Message}");
+        }
     }
 }
