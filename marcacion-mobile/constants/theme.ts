@@ -1,21 +1,42 @@
 /**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
+ * LA MEDIA NARANJA - Colores Corporativos
+ * Colores principales: #cc3625, #e9501e, #fab626
  */
 
 import { Platform } from 'react-native';
 
-const tintColorLight = '#0a7ea4';
+// Colores corporativos
+export const CorporateColors = {
+  primary: '#e9501e',      // Naranja principal
+  primaryDark: '#cc3625',  // Rojo/Naranja oscuro
+  secondary: '#fab626',    // Amarillo/Dorado
+  white: '#ffffff',
+  textDark: '#2d2d2d',
+  textLight: '#555555',
+  background: '#fff5f2',   // Fondo suave con tono naranja
+  success: '#4caf50',
+  error: '#d32f2f',
+  warning: '#fab626',
+};
+
+const tintColorLight = CorporateColors.primary;
 const tintColorDark = '#fff';
 
 export const Colors = {
   light: {
-    text: '#11181C',
-    background: '#fff',
+    text: CorporateColors.textDark,
+    background: CorporateColors.white,
     tint: tintColorLight,
     icon: '#687076',
     tabIconDefault: '#687076',
     tabIconSelected: tintColorLight,
+    // Colores corporativos adicionales
+    primary: CorporateColors.primary,
+    primaryDark: CorporateColors.primaryDark,
+    secondary: CorporateColors.secondary,
+    success: CorporateColors.success,
+    error: CorporateColors.error,
+    warning: CorporateColors.warning,
   },
   dark: {
     text: '#ECEDEE',
@@ -24,18 +45,21 @@ export const Colors = {
     icon: '#9BA1A6',
     tabIconDefault: '#9BA1A6',
     tabIconSelected: tintColorDark,
+    // Colores corporativos adicionales
+    primary: CorporateColors.primary,
+    primaryDark: CorporateColors.primaryDark,
+    secondary: CorporateColors.secondary,
+    success: CorporateColors.success,
+    error: CorporateColors.error,
+    warning: CorporateColors.warning,
   },
 };
 
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
     sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
     serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
     rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
     mono: 'ui-monospace',
   },
   default: {

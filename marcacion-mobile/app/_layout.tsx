@@ -10,21 +10,86 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '@/src/auth/AuthContext';
 import LoadingIndicator from '@/src/components/LoadingIndicator';
 
-// Tema personalizado para @rneui
+// ✅ Colores corporativos "La Media Naranja"
+const CorporateColors = {
+  primary: '#e9501e',      // Naranja principal
+  primaryDark: '#cc3625',  // Rojo/Naranja oscuro
+  secondary: '#fab626',    // Amarillo/Dorado
+  white: '#ffffff',
+  background: '#fff8f5',   // Fondo suave con tono naranja
+  success: '#4caf50',
+  warning: '#fab626',
+  error: '#d32f2f',
+};
+
+// ✅ Tema personalizado para @rneui con colores corporativos
 const theme = createTheme({
   lightColors: {
-    primary: '#007AFF',
+    primary: CorporateColors.primary,
     // @ts-ignore - RNE tiene tipos incompletos para colores custom
-    success: '#28a745',
-    warning: '#ffc107',
-    background: '#f4f6f8',
+    secondary: CorporateColors.secondary,
+    success: CorporateColors.success,
+    warning: CorporateColors.warning,
+    error: CorporateColors.error,
+    background: CorporateColors.background,
+  },
+  darkColors: {
+    primary: CorporateColors.primary,
+    // @ts-ignore
+    secondary: CorporateColors.secondary,
+    success: CorporateColors.success,
+    warning: CorporateColors.warning,
+    error: CorporateColors.error,
   },
   mode: 'light',
+  components: {
+    Button: {
+      buttonStyle: {
+        borderRadius: 10,
+      },
+      titleStyle: {
+        fontWeight: '700',
+      },
+    },
+    Card: {
+      containerStyle: {
+        borderRadius: 14,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+        elevation: 3,
+      },
+    },
+  },
 });
+
+// ✅ Tema de navegación personalizado con colores corporativos
+const CorporateLightTheme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    primary: CorporateColors.primary,
+    background: CorporateColors.white,
+    card: CorporateColors.white,
+    text: '#2d2d2d',
+    border: '#e0e0e0',
+    notification: CorporateColors.primary,
+  },
+};
+
+const CorporateDarkTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    primary: CorporateColors.primary,
+    notification: CorporateColors.primary,
+  },
+};
 
 function InitialLayout() {
   const { token, isLoading } = useAuth();
-  const segments = useSegments(); // p.ej. ['(tabs)', 'tablero'] o ['ausencias']
+  const segments = useSegments();
   const router = useRouter();
 
   useEffect(() => {
@@ -34,16 +99,13 @@ function InitialLayout() {
     const inAuthGroup = first === '(auth)';
     const inTabs = first === '(tabs)';
 
-    // Permitir pantallas fuera de tabs sin redirigir
     const inAllowedDetails = first === 'ausencias' || first === 'tardanzas' || first === 'modal';
 
     if (token) {
-      // Si está autenticado, manda a tabs cuando no esté en tabs ni en pantallas permitidas
       if (!(inTabs || inAllowedDetails)) {
         router.replace('/(tabs)');
       }
     } else {
-      // Si NO está autenticado y no está en el grupo de auth, envía a login
       if (!inAuthGroup) {
         router.replace('/(auth)/login');
       }
@@ -52,27 +114,44 @@ function InitialLayout() {
 
   if (isLoading) return <LoadingIndicator />;
 
-  // *** IMPORTANTE: usar Stack aquí para que aparezca el header y el botón de volver ***
   return (
-    <Stack>
+    <Stack
+      screenOptions={{
+        // ✅ Header con colores corporativos
+        headerStyle: {
+          backgroundColor: CorporateColors.primary,
+        },
+        headerTintColor: CorporateColors.white,
+        headerTitleStyle: {
+          fontWeight: '700',
+        },
+        headerShadowVisible: false,
+      }}
+    >
       {/* Grupo de autenticación */}
       <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-      <Stack.Screen name="(auth)/login" options={{ headerShown: false }} />.
+      <Stack.Screen name="(auth)/login" options={{ headerShown: false }} />
 
       {/* Grupo de tabs */}
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
 
-      {/* Detalles con header y back automático */}
+      {/* Detalles con header corporativo */}
       <Stack.Screen
         name="ausencias"
-        options={{ title: 'Detalle de Ausencias', headerBackTitle: 'Volver' }}
+        options={{ 
+          title: 'Detalle de Ausencias', 
+          headerBackTitle: 'Volver',
+        }}
       />
       <Stack.Screen
         name="tardanzas"
-        options={{ title: 'Detalle de Tardanzas', headerBackTitle: 'Volver' }}
+        options={{ 
+          title: 'Detalle de Tardanzas', 
+          headerBackTitle: 'Volver',
+        }}
       />
 
-      {/* Si tienes alguna pantalla modal suelta */}
+      {/* Pantalla modal */}
       <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
     </Stack>
   );
@@ -85,9 +164,9 @@ export default function RootLayout() {
     <AuthProvider>
       <SafeAreaProvider>
         <ThemeProvider theme={theme}>
-          <NavTheme value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+          <NavTheme value={colorScheme === 'dark' ? CorporateDarkTheme : CorporateLightTheme}>
             <InitialLayout />
-            <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
+            <StatusBar style="light" />
           </NavTheme>
         </ThemeProvider>
       </SafeAreaProvider>

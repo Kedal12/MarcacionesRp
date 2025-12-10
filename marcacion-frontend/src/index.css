@@ -1,3 +1,7 @@
+/* ===========================================
+   LA MEDIA NARANJA - Estilos Corporativos
+   =========================================== */
+
 /* Reset y layout base */
 html, body, #root {
   height: 100%;
@@ -5,50 +9,146 @@ html, body, #root {
 }
 
 body {
-  background: #0b0b0b;
-  color: #eaeaea;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', sans-serif;
+  /* Fondo corporativo */
+  background-image: url('/fondo-corporativo.png');
+  background-size: 100% auto; /* Ancho completo, alto automático */
+  background-position: bottom center; /* Anclado abajo para ver los pies del naranjito */
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  background-color: #f97316; /* Color naranja que combina con la imagen */
+  
+  /* Tipografía */
+  color: #2d2d2d;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 
+               'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+  min-height: 100vh;
 }
 
 /* Utilidades */
 .center-screen {
   min-height: 100vh;
   display: grid;
-  place-items: center;     /* centra vertical/horizontal */
+  place-items: center;
   padding: 24px;
 }
 
+/* Cards con estilo corporativo */
 .card {
-  width: min(520px, 92vw); /* más ancho en desktop, fluido en móvil */
-  background: #1f1f1f;
-  color: #fff;
+  width: min(520px, 92vw);
+  background: rgba(255, 255, 255, 0.95);
+  color: #2d2d2d;
   border-radius: 14px;
   padding: 28px;
-  box-shadow: 0 12px 36px rgba(0,0,0,.35);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(10px);
 }
 
+/* Inputs con estilo corporativo */
 .input {
   width: 100%;
-  padding: 12px 10px;
+  padding: 12px 14px;
   border-radius: 10px;
-  border: 1px solid #343434;
-  background: #141414;
-  color: #fff;
+  border: 2px solid #e0e0e0;
+  background: rgba(255, 255, 255, 0.95);
+  color: #2d2d2d;
   outline: none;
+  font-size: 16px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
+.input:focus {
+  border-color: #e9501e;
+  box-shadow: 0 0 0 3px rgba(233, 80, 30, 0.15);
+}
+
+.input::placeholder {
+  color: #999;
+}
+
+/* Botones corporativos */
 .button {
   width: 100%;
-  padding: 12px;
+  padding: 14px;
   border-radius: 10px;
   border: none;
-  background: #4f46e5;
+  background: linear-gradient(135deg, #e9501e 0%, #cc3625 100%);
   color: #fff;
   font-weight: 700;
+  font-size: 16px;
   cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 4px 12px rgba(233, 80, 30, 0.3);
+}
+
+.button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(233, 80, 30, 0.4);
+}
+
+.button:active {
+  transform: translateY(0);
 }
 
 .button:disabled {
-  opacity: .6;
+  opacity: 0.6;
   cursor: not-allowed;
+  transform: none;
+}
+
+/* Botón secundario (amarillo) */
+.button-secondary {
+  background: linear-gradient(135deg, #fab626 0%, #f5a623 100%);
+  color: #2d2d2d;
+  box-shadow: 0 4px 12px rgba(250, 182, 38, 0.3);
+}
+
+.button-secondary:hover {
+  box-shadow: 0 6px 16px rgba(250, 182, 38, 0.4);
+}
+
+/* Links */
+a {
+  color: #e9501e;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+a:hover {
+  color: #cc3625;
+}
+
+/* Scrollbar personalizada */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(233, 80, 30, 0.5);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(233, 80, 30, 0.7);
+}
+
+/* Animación de fade in para contenido */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-out;
 }

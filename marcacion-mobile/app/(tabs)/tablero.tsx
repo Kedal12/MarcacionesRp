@@ -10,17 +10,29 @@ import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Image,
   RefreshControl,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 
 dayjs.locale('es');
+
+// ✅ Colores corporativos "La Media Naranja"
+const CorporateColors = {
+  primary: '#e9501e',
+  primaryDark: '#cc3625',
+  secondary: '#fab626',
+  white: '#ffffff',
+  background: '#fff8f5',
+  success: '#4caf50',
+  error: '#D9534F',
+  textDark: '#2d2d2d',
+  textLight: '#6b7280',
+};
 
 const ROUTES = {
   ausencias: '/ausencias',
@@ -62,7 +74,7 @@ const StatRowBase = ({
 }) => {
   const isZero =
     typeof value === 'number' ? value === 0 : value === '00:00' || value === '0' || value === '0m';
-  const valueColor = label === 'Sobretiempo' ? '#28A745' : '#000';
+  const valueColor = label === 'Sobretiempo' ? CorporateColors.success : CorporateColors.textDark;
   const showBadge = typeof rightBadge === 'number' && rightBadge > 0;
 
   return (
@@ -70,13 +82,15 @@ const StatRowBase = ({
       <Text style={styles.statLabel}>{label}</Text>
       <View style={styles.statValueContainer}>
         <View style={{ alignItems: 'flex-end' }}>
-          <Text style={[styles.statValue, { color: isZero ? '#888' : valueColor }]}>{value}</Text>
+          <Text style={[styles.statValue, { color: isZero ? CorporateColors.textLight : valueColor }]}>
+            {value}
+          </Text>
           {!!caption && (
-            <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }}>{caption}</Text>
+            <Text style={styles.captionText}>{caption}</Text>
           )}
         </View>
         {showBadge && (
-          <View style={[styles.badgeContainer, { backgroundColor: '#D9534F', marginLeft: 8 }]}>
+          <View style={styles.badgeContainer}>
             <Text style={styles.badgeText}>{rightBadge}</Text>
           </View>
         )}
@@ -117,7 +131,7 @@ export default function TableroScreen() {
         { 
           headers: { 
             Authorization: `Bearer ${token}`,
-            'ngrok-skip-browser-warning': 'true' // Para ngrok
+            'ngrok-skip-browser-warning': 'true'
           } 
         }
       );
@@ -138,7 +152,7 @@ export default function TableroScreen() {
   if (isLoading && !resumen) {
     return (
       <SafeAreaView style={styles.centered}>
-        <ActivityIndicator size="large" />
+        <ActivityIndicator size="large" color={CorporateColors.primary} />
       </SafeAreaView>
     );
   }
@@ -147,8 +161,8 @@ export default function TableroScreen() {
     return (
       <SafeAreaView style={styles.centered}>
         <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity onPress={fetchResumen}>
-          <Text style={{ color: 'blue' }}>Reintentar</Text>
+        <TouchableOpacity onPress={fetchResumen} style={styles.retryButton}>
+          <Text style={styles.retryText}>Reintentar</Text>
         </TouchableOpacity>
       </SafeAreaView>
     );
@@ -157,7 +171,7 @@ export default function TableroScreen() {
   if (!resumen) {
     return (
       <SafeAreaView style={styles.centered}>
-        <Text>No hay datos disponibles.</Text>
+        <Text style={styles.noDataText}>No hay datos disponibles.</Text>
       </SafeAreaView>
     );
   }
@@ -166,20 +180,37 @@ export default function TableroScreen() {
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
         style={styles.container}
-        refreshControl={<RefreshControl refreshing={isLoading} onRefresh={fetchResumen} />}
+        refreshControl={
+          <RefreshControl 
+            refreshing={isLoading} 
+            onRefresh={fetchResumen}
+            tintColor={CorporateColors.primary}
+            colors={[CorporateColors.primary]}
+          />
+        }
       >
+        {/* Header con info del usuario */}
         <View style={styles.header}>
           <View style={styles.headerText}>
             <Text style={styles.name}>{resumen.nombreCompleto}</Text>
             {resumen.cargo && <Text style={styles.role}>{resumen.cargo}</Text>}
             {resumen.documento && <Text style={styles.id}>{resumen.documento}</Text>}
           </View>
-          <Image source={{ uri: 'https://via.placeholder.com/60' }} style={styles.profilePic} />
+          <View style={styles.avatarContainer}>
+            <Text style={styles.avatarText}>
+              {resumen.nombreCompleto?.charAt(0)?.toUpperCase() || 'U'}
+            </Text>
+          </View>
         </View>
 
-        <Text style={styles.periodo}>Datos del mes actual ({resumen.periodoActual})</Text>
+        {/* Período */}
+        <View style={styles.periodoContainer}>
+          <Text style={styles.periodo}>Datos del mes actual ({resumen.periodoActual})</Text>
+        </View>
+        
         {error && <Text style={styles.errorTextSmall}>{error}</Text>}
 
+        {/* Stats */}
         <View style={styles.statsContainer}>
           <StatRowLink
             label="Ausencias"
@@ -209,10 +240,10 @@ export default function TableroScreen() {
           <StatRowBase label="Sobretiempo" value={resumen.sobretiempo} />
         </View>
 
+        {/* Footer con fecha de inicio */}
         {resumen.fechaInicioLaboral ? (
           <View style={styles.footer}>
             <Text style={styles.footerText}>Fecha de inicio laboral</Text>
-            {/* ✅ Usando formatearFecha para arreglar el parseo en web */}
             <Text style={styles.footerDate}>
               {formatearFecha(resumen.fechaInicioLaboral, 'DD [de] MMMM [de] YYYY')}
             </Text>
@@ -224,39 +255,116 @@ export default function TableroScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#F9F9F9' },
-  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9F9F9' },
-  errorText: { color: 'red', fontSize: 16, padding: 20, textAlign: 'center' },
-  errorTextSmall: { color: 'red', fontSize: 14, textAlign: 'center', marginVertical: 10 },
-  container: { flex: 1 },
+  safeArea: { 
+    flex: 1, 
+    backgroundColor: CorporateColors.background,
+  },
+  centered: { 
+    flex: 1, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    backgroundColor: CorporateColors.background,
+  },
+  errorText: { 
+    color: CorporateColors.primaryDark, 
+    fontSize: 16, 
+    padding: 20, 
+    textAlign: 'center',
+  },
+  errorTextSmall: { 
+    color: CorporateColors.primaryDark, 
+    fontSize: 14, 
+    textAlign: 'center', 
+    marginVertical: 10,
+  },
+  noDataText: {
+    color: CorporateColors.textLight,
+    fontSize: 16,
+  },
+  retryButton: {
+    marginTop: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: CorporateColors.primary,
+    borderRadius: 8,
+  },
+  retryText: {
+    color: CorporateColors.white,
+    fontWeight: '600',
+  },
+  container: { 
+    flex: 1,
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 15,
-    backgroundColor: '#FFF',
+    paddingVertical: 20,
+    backgroundColor: CorporateColors.white,
     borderBottomWidth: 1,
-    borderBottomColor: '#EEE',
+    borderBottomColor: '#f0f0f0',
   },
-  headerText: { flex: 1, marginRight: 15 },
-  name: { fontSize: 18, fontWeight: 'bold', color: '#111' },
-  role: { fontSize: 15, color: '#555', marginTop: 2 },
-  id: { fontSize: 14, color: '#777', marginTop: 2 },
-  profilePic: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#EEE' },
+  headerText: { 
+    flex: 1, 
+    marginRight: 15,
+  },
+  name: { 
+    fontSize: 20, 
+    fontWeight: 'bold', 
+    color: CorporateColors.textDark,
+  },
+  role: { 
+    fontSize: 15, 
+    color: CorporateColors.textLight, 
+    marginTop: 4,
+  },
+  id: { 
+    fontSize: 14, 
+    color: CorporateColors.textLight, 
+    marginTop: 2,
+  },
+  avatarContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: CorporateColors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: CorporateColors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 5,
+  },
+  avatarText: {
+    color: CorporateColors.white,
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  periodoContainer: {
+    backgroundColor: CorporateColors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
   periodo: {
     paddingHorizontal: 20,
     paddingVertical: 12,
     fontSize: 14,
-    color: '#333',
+    color: CorporateColors.textDark,
     fontWeight: '600',
-    backgroundColor: '#FFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#EEE',
   },
   statsContainer: {
-    backgroundColor: '#FFF',
+    backgroundColor: CorporateColors.white,
     marginTop: 10,
+    borderRadius: 16,
+    marginHorizontal: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+    overflow: 'hidden',
   },
   statRow: {
     flexDirection: 'row',
@@ -265,21 +373,55 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     paddingHorizontal: 20,
     borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    borderBottomColor: '#f5f5f5',
   },
-  statLabel: { fontSize: 16, color: '#333' },
-  statValueContainer: { flexDirection: 'row', alignItems: 'center' },
-  statValue: { fontSize: 16, fontWeight: 'bold', marginRight: 8 },
-  badgeContainer: {
-    minWidth: 22,
-    height: 22,
-    borderRadius: 11,
-    paddingHorizontal: 5,
-    justifyContent: 'center',
+  statLabel: { 
+    fontSize: 16, 
+    color: CorporateColors.textDark,
+  },
+  statValueContainer: { 
+    flexDirection: 'row', 
     alignItems: 'center',
   },
-  badgeText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
-  footer: { padding: 20, marginTop: 20, alignItems: 'center' },
-  footerText: { fontSize: 14, color: '#777' },
-  footerDate: { fontSize: 15, fontWeight: '600', color: '#555', marginTop: 4, marginBottom: 30 },
+  statValue: { 
+    fontSize: 16, 
+    fontWeight: 'bold', 
+    marginRight: 8,
+  },
+  captionText: {
+    fontSize: 12,
+    color: CorporateColors.textLight,
+    marginTop: 2,
+  },
+  badgeContainer: {
+    minWidth: 24,
+    height: 24,
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: CorporateColors.primary,
+    marginLeft: 8,
+  },
+  badgeText: { 
+    color: CorporateColors.white, 
+    fontSize: 12, 
+    fontWeight: 'bold',
+  },
+  footer: { 
+    padding: 20, 
+    marginTop: 20, 
+    alignItems: 'center',
+  },
+  footerText: { 
+    fontSize: 14, 
+    color: CorporateColors.textLight,
+  },
+  footerDate: { 
+    fontSize: 15, 
+    fontWeight: '600', 
+    color: CorporateColors.textDark, 
+    marginTop: 4, 
+    marginBottom: 30,
+  },
 });

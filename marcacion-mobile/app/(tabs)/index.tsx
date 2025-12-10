@@ -1,6 +1,7 @@
 // src/app/(tabs)/index.tsx
 import { Button, Card, Icon, Text } from '@rneui/themed';
 import dayjs from 'dayjs';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Location from 'expo-location';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, AppState, AppStateStatus, Image, StyleSheet, View } from 'react-native';
@@ -21,6 +22,19 @@ import {
 import { useAuth } from '@/src/auth/AuthContext';
 import LoadingIndicator from '@/src/components/LoadingIndicator';
 
+// ✅ Colores corporativos "La Media Naranja"
+const CorporateColors = {
+  primary: '#e9501e',
+  primaryDark: '#cc3625',
+  secondary: '#fab626',
+  white: '#ffffff',
+  background: '#fff8f5',
+  success: '#4caf50',
+  warning: '#f59e0b',
+  textDark: '#2d2d2d',
+  textLight: '#6b7280',
+};
+
 export default function HomeScreen() {
   const { user, logout, token, isLoading: authLoading } = useAuth();
 
@@ -36,13 +50,13 @@ export default function HomeScreen() {
     !lastMarcacion || lastMarcacion.tipo === 'salida' ? 'entrada' : 'salida';
 
   const buttonLabel = `Marcar ${nextMarkType === 'entrada' ? 'Entrada' : 'Salida'}`;
-  const buttonColor = nextMarkType === 'entrada' ? '#28a745' : '#ffc107';
+  // ✅ Colores corporativos para botones
+  const buttonColor = nextMarkType === 'entrada' ? CorporateColors.success : CorporateColors.primary;
 
   const fetchLastMarcacion = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      // Límites del día en Bogotá → enviados en UTC al backend
       const startLocal = nowInBogota().startOf('day');
       const todayStart = startLocal.utc().toISOString();
       const todayEnd = startLocal.add(1, 'day').utc().toISOString();
@@ -121,7 +135,6 @@ export default function HomeScreen() {
 
       const nuevaMarcacion = await crearMarcacion(marcacionData);
 
-      // ✅ Mostrar HORA LOCAL que ya viene del backend
       const hm = nuevaMarcacion?.fechaHoraLocal
         ? dayjs(nuevaMarcacion.fechaHoraLocal).format('HH:mm')
         : '--:--';
@@ -217,7 +230,6 @@ export default function HomeScreen() {
     return <LoadingIndicator />;
   }
 
-  // ==== UI: usar SIEMPRE los campos *Local* que ya vienen desde el backend ====
   const ultimaLocalISO = lastMarcacion?.fechaHoraLocal ?? null;
   const displayTime = ultimaLocalISO ? dayjs(ultimaLocalISO).format('HH:mm') : '--:--';
   const displayFromNow = ultimaLocalISO ? dayjs(ultimaLocalISO).fromNow() : '--';
@@ -226,27 +238,41 @@ export default function HomeScreen() {
   const displayAlmuerzoTime = inicioAlmuerzoISO ? dayjs(inicioAlmuerzoISO).format('HH:mm') : '--:--';
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
-      <View style={styles.container}>
-        <Card containerStyle={stylesHome.heroCard}>
-          <Text h3 style={stylesHome.hello}>¡Hola, {user?.nombreCompleto || 'Usuario'}!</Text>
+    <View style={styles.container}>
+      {/* ✅ Header con gradiente corporativo */}
+      <LinearGradient
+        colors={[CorporateColors.primaryDark, CorporateColors.primary, CorporateColors.secondary]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.header}
+      >
+        <SafeAreaView edges={['top']}>
+          <View style={styles.headerContent}>
+            <Text style={styles.greeting}>¡Hola, {user?.nombreCompleto || 'Usuario'}!</Text>
 
-          <Image
-            source={require('../../assets/images/logo.png')}
-            style={stylesHome.logo}
-            resizeMode="contain"
-          />
+            <Image
+              source={require('../../assets/images/logo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
 
-          <Text style={stylesHome.dateText}>{nowInBogota().format('dddd, D [de] MMMM')}</Text>
+            <Text style={styles.dateText}>{nowInBogota().format('dddd, D [de] MMMM')}</Text>
+          </View>
+        </SafeAreaView>
+      </LinearGradient>
 
-          <View style={stylesHome.lastMarkContainer}>
+      {/* Contenido */}
+      <View style={styles.content}>
+        {/* Card de última marcación */}
+        <Card containerStyle={styles.card}>
+          <View style={styles.lastMarkContainer}>
             <Icon
               name={lastMarcacion?.tipo === 'entrada' ? 'log-in' : 'log-out'}
               type="ionicon"
-              color={lastMarcacion?.tipo === 'entrada' ? 'green' : 'orange'}
-              size={20}
+              color={lastMarcacion?.tipo === 'entrada' ? CorporateColors.success : CorporateColors.primary}
+              size={22}
             />
-            <Text style={stylesHome.lastMarkText}>
+            <Text style={styles.lastMarkText}>
               {lastMarcacion
                 ? `Última marca: ${lastMarcacion.tipo === 'entrada' ? 'Entrada' : 'Salida'} ${displayFromNow} (${displayTime})`
                 : 'No hay marcaciones registradas hoy.'}
@@ -254,27 +280,28 @@ export default function HomeScreen() {
           </View>
 
           {estadoAlmuerzo?.estado === 'almuerzo_en_curso' && (
-            <View style={stylesHome.almuerzoEnCursoContainer}>
-              <Icon name="fast-food" type="ionicon" color="#f59e0b" size={20} />
-              <Text style={stylesHome.almuerzoEnCursoText}>
+            <View style={styles.almuerzoEnCursoContainer}>
+              <Icon name="fast-food" type="ionicon" color={CorporateColors.warning} size={20} />
+              <Text style={styles.almuerzoEnCursoText}>
                 Almuerzo en curso desde las {displayAlmuerzoTime}
               </Text>
             </View>
           )}
 
           {estadoAlmuerzo?.estado === 'almuerzo_completado' && (
-            <View style={stylesHome.almuerzoCompletadoContainer}>
-              <Icon name="checkmark-circle" type="ionicon" color="#10b981" size={20} />
-              <Text style={stylesHome.almuerzoCompletadoText}>
+            <View style={styles.almuerzoCompletadoContainer}>
+              <Icon name="checkmark-circle" type="ionicon" color={CorporateColors.success} size={20} />
+              <Text style={styles.almuerzoCompletadoText}>
                 Almuerzo completado: {estadoAlmuerzo.tiempoAlmuerzoMinutos} minutos
               </Text>
             </View>
           )}
 
           {error && <Text style={styles.errorText}>{error}</Text>}
-          {locationError && <Text style={[styles.errorText, { color: 'orange' }]}>{locationError}</Text>}
+          {locationError && <Text style={[styles.errorText, { color: CorporateColors.warning }]}>{locationError}</Text>}
         </Card>
 
+        {/* ✅ Botón de marcar con color corporativo */}
         <Button
           title={buttonLabel}
           onPress={handleMarcar}
@@ -291,110 +318,195 @@ export default function HomeScreen() {
               iconStyle={{ marginRight: 10 }}
             />
           }
-          titleStyle={{ fontSize: 18, fontWeight: 'bold' }}
+          titleStyle={styles.buttonTitle}
         />
 
+        {/* Botón de almuerzo - inicio */}
         {lastMarcacion?.tipo === 'entrada' && estadoAlmuerzo?.estado === 'sin_almuerzo' && (
           <Button
             title="Iniciar Almuerzo"
             onPress={() => handleAlmuerzo('inicio')}
-            buttonStyle={[styles.almuerzoButton, { backgroundColor: '#f59e0b' }]}
+            buttonStyle={[styles.almuerzoButton, { backgroundColor: CorporateColors.secondary }]}
             containerStyle={styles.buttonContainer}
             disabled={isSubmitting || isSubmittingAlmuerzo}
             loading={isSubmittingAlmuerzo}
-            icon={<Icon name="fast-food-outline" type="ionicon" size={22} color="white" iconStyle={{ marginRight: 10 }} />}
-            titleStyle={{ fontSize: 16, fontWeight: '600' }}
+            icon={<Icon name="fast-food-outline" type="ionicon" size={22} color={CorporateColors.textDark} iconStyle={{ marginRight: 10 }} />}
+            titleStyle={[styles.almuerzoButtonTitle, { color: CorporateColors.textDark }]}
           />
         )}
 
+        {/* Botón de almuerzo - fin */}
         {estadoAlmuerzo?.estado === 'almuerzo_en_curso' && (
           <Button
             title="Finalizar Almuerzo"
             onPress={() => handleAlmuerzo('fin')}
-            buttonStyle={[styles.almuerzoButton, { backgroundColor: '#10b981' }]}
+            buttonStyle={[styles.almuerzoButton, { backgroundColor: CorporateColors.success }]}
             containerStyle={styles.buttonContainer}
             disabled={isSubmitting || isSubmittingAlmuerzo}
             loading={isSubmittingAlmuerzo}
             icon={<Icon name="checkmark-circle-outline" type="ionicon" size={22} color="white" iconStyle={{ marginRight: 10 }} />}
-            titleStyle={{ fontSize: 16, fontWeight: '600' }}
+            titleStyle={styles.almuerzoButtonTitle}
           />
         )}
 
+        {/* Botón cerrar sesión */}
         <Button
           title="Cerrar Sesión"
           type="clear"
           onPress={logout}
-          containerStyle={{ marginTop: 10 }}
-          titleStyle={{ color: 'grey' }}
+          containerStyle={{ marginTop: 15 }}
+          titleStyle={{ color: CorporateColors.textLight }}
         />
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f4f6f8' },
-  container: { flex: 1, alignItems: 'center', padding: 20 },
-  buttonContainer: { width: '80%', marginVertical: 10 },
-  markButton: {
-    paddingVertical: 15,
-    borderRadius: 8,
+  container: {
+    flex: 1,
+    backgroundColor: CorporateColors.background,
+  },
+  header: {
+    paddingBottom: 24,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  headerContent: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+  },
+  greeting: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: CorporateColors.white,
+    textAlign: 'center',
+    textShadowColor: 'rgba(0,0,0,0.2)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 4,
+  },
+  logo: {
+    width: 130,
+    height: 55,
+    marginVertical: 10,
+  },
+  dateText: {
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.9)',
+    textTransform: 'capitalize',
+    fontWeight: '600',
+  },
+  content: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
+  card: {
+    width: '100%',
+    borderRadius: 16,
+    marginBottom: 20,
+    padding: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 0,
   },
-  almuerzoButton: {
-    paddingVertical: 12,
-    borderRadius: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3.84,
-    elevation: 4,
-  },
-  errorText: { color: 'red', marginTop: 10, textAlign: 'center', fontSize: 14 },
-});
-
-const stylesHome = StyleSheet.create({
-  heroCard: { width: '92%', borderRadius: 16, marginBottom: 20 },
-  hello: { textAlign: 'center', marginBottom: 10, fontWeight: '900' },
-  logo: { width: 120, height: 60, alignSelf: 'center', marginVertical: 6 },
-  dateText: { textAlign: 'center', color: '#6b7280', marginBottom: 8, fontWeight: '600' },
   lastMarkContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#eef2ff',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    gap: 8,
+    backgroundColor: '#fff5f2',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 10,
   },
-  lastMarkText: { color: '#374151', fontSize: 14, textAlign: 'center', flex: 1 },
+  lastMarkText: {
+    color: CorporateColors.textDark,
+    fontSize: 14,
+    textAlign: 'center',
+    flex: 1,
+  },
   almuerzoEnCursoContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#fef3c7',
-    borderRadius: 10,
+    borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 12,
     gap: 8,
-    marginTop: 10,
+    marginTop: 12,
   },
-  almuerzoEnCursoText: { color: '#92400e', fontSize: 14, textAlign: 'center', flex: 1, fontWeight: '600' },
+  almuerzoEnCursoText: {
+    color: '#92400e',
+    fontSize: 14,
+    textAlign: 'center',
+    flex: 1,
+    fontWeight: '600',
+  },
   almuerzoCompletadoContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#d1fae5',
-    borderRadius: 10,
+    borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 12,
     gap: 8,
-    marginTop: 10,
+    marginTop: 12,
   },
-  almuerzoCompletadoText: { color: '#065f46', fontSize: 14, textAlign: 'center', flex: 1, fontWeight: '600' },
+  almuerzoCompletadoText: {
+    color: '#065f46',
+    fontSize: 14,
+    textAlign: 'center',
+    flex: 1,
+    fontWeight: '600',
+  },
+  buttonContainer: {
+    width: '100%',
+    marginVertical: 8,
+  },
+  markButton: {
+    paddingVertical: 16,
+    borderRadius: 14,
+    shadowColor: CorporateColors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  buttonTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  almuerzoButton: {
+    paddingVertical: 14,
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  almuerzoButtonTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: CorporateColors.white,
+  },
+  errorText: {
+    color: CorporateColors.primaryDark,
+    marginTop: 12,
+    textAlign: 'center',
+    fontSize: 14,
+  },
 });

@@ -40,26 +40,51 @@ export default function App() {
     setOpenPassDialog(true);
   };
 
+  // Estilo para botones del navbar
+  const navButtonStyle = (isActive) => ({
+    color: "#fff",
+    fontWeight: isActive ? 700 : 500,
+    backgroundColor: isActive ? "rgba(255, 255, 255, 0.2)" : "transparent",
+    "&:hover": {
+      backgroundColor: "rgba(255, 255, 255, 0.15)",
+    },
+    borderRadius: "8px",
+    px: 2,
+    py: 0.75,
+    fontSize: "0.875rem",
+  });
+
   return (
     <>
       <AppBar
         position="sticky"
-        color="transparent"
         elevation={0}
-        sx={{ borderBottom: 1, borderColor: "divider" }}
+        sx={{ 
+          background: "linear-gradient(135deg, #cc3625 0%, #e9501e 50%, #fab626 100%)",
+          borderBottom: "3px solid rgba(255, 255, 255, 0.2)",
+        }}
       >
-        <Toolbar sx={{ gap: 2 }}>
-          <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: 0.2 }}>
+        <Toolbar sx={{ gap: 2, flexWrap: "wrap", py: 1 }}>
+          {/* Título */}
+          <Typography 
+            variant="h6" 
+            sx={{ 
+              fontWeight: 800, 
+              letterSpacing: 0.2,
+              color: "#fff",
+              textShadow: "0 2px 4px rgba(0,0,0,0.2)",
+            }}
+          >
             Panel Marcación
           </Typography>
 
-          <Stack direction="row" spacing={1} sx={{ ml: 2, flexWrap: 'wrap' }}>
+          {/* Navegación */}
+          <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
             {/* --- Botones para TODOS los usuarios logueados --- */}
             <Button
               component={Link}
               to="/"
-              variant={pathname === "/" ? "contained" : "text"}
-              color="primary"
+              sx={navButtonStyle(pathname === "/")}
             >
               Dashboard
             </Button>
@@ -67,8 +92,7 @@ export default function App() {
             <Button
               component={Link}
               to="/marcaciones"
-              variant={pathname.startsWith("/marcaciones") ? "contained" : "text"}
-              color="primary"
+              sx={navButtonStyle(pathname.startsWith("/marcaciones"))}
             >
               Marcaciones
             </Button>
@@ -76,8 +100,7 @@ export default function App() {
             <Button
               component={Link}
               to="/ausencias"
-              variant={pathname.startsWith("/ausencias") && !pathname.includes('admin') ? "contained" : "text"}
-              color="primary"
+              sx={navButtonStyle(pathname.startsWith("/ausencias") && !pathname.includes('admin'))}
             >
               Mis Ausencias
             </Button>
@@ -85,12 +108,10 @@ export default function App() {
             <Button
               component={Link}
               to="/mis-correcciones"
-              variant={pathname.startsWith("/mis-correcciones") ? "contained" : "text"}
-              color="primary"
+              sx={navButtonStyle(pathname.startsWith("/mis-correcciones"))}
             >
               Mis Correcciones
             </Button>
-            {/* --- FIN Botones comunes --- */}
 
             {/* --- Botones para ADMINS DE SEDE y SUPERADMINS --- */}
             {(isAdmin || isSuperAdmin) && (
@@ -98,8 +119,7 @@ export default function App() {
                 <Button
                   component={Link}
                   to="/usuarios"
-                  variant={pathname.startsWith("/usuarios") ? "contained" : "text"}
-                  color="primary"
+                  sx={navButtonStyle(pathname.startsWith("/usuarios"))}
                 >
                   Usuarios
                 </Button>
@@ -107,8 +127,7 @@ export default function App() {
                 <Button
                   component={Link}
                   to="/asignaciones"
-                  variant={pathname.startsWith("/asignaciones") ? "contained" : "text"}
-                  color="primary"
+                  sx={navButtonStyle(pathname.startsWith("/asignaciones"))}
                 >
                   Asignaciones
                 </Button>
@@ -116,36 +135,28 @@ export default function App() {
                 <Button
                   component={Link}
                   to="/reportes/horas"
-                  variant={pathname.startsWith("/reportes/horas") ? "contained" : "text"}
-                  color="primary"
+                  sx={navButtonStyle(pathname.startsWith("/reportes/horas"))}
                 >
                   Reporte Horas
                 </Button>
 
-                {/* --- 🛑 CAMBIO AQUÍ: Moví los botones de gestión a la sección de SuperAdmin abajo 🛑 --- */}
-
-                {/* Botón de Horarios - Aparece para ADMIN y SUPERADMIN */}
                 <Button
                   component={Link}
                   to="/horarios"
-                  variant={pathname.startsWith("/horarios") ? "contained" : "text"}
-                  color="primary"
+                  sx={navButtonStyle(pathname.startsWith("/horarios"))}
                 >
                   {isAdmin ? "Horarios (Sede)" : "Horarios (Global)"}
                 </Button>
               </>
             )}
-            {/* --- FIN Botones Admin / SuperAdmin --- */}
 
             {/* --- Botones SÓLO PARA SUPERADMIN --- */}
             {isSuperAdmin && (
               <>
-                {/* ✅ AQUÍ MUEVO LOS BOTONES DE GESTIÓN (RRHH) */}
                 <Button
                   component={Link}
                   to="/ausenciasadmin"
-                  variant={pathname.startsWith("/ausenciasadmin") ? "contained" : "text"}
-                  color="primary"
+                  sx={navButtonStyle(pathname.startsWith("/ausenciasadmin"))}
                 >
                   Gestionar Ausencias
                 </Button>
@@ -153,18 +164,15 @@ export default function App() {
                 <Button
                   component={Link}
                   to="/correcciones-admin"
-                  variant={pathname.startsWith("/correcciones-admin") ? "contained" : "text"}
-                  color="primary"
+                  sx={navButtonStyle(pathname.startsWith("/correcciones-admin"))}
                 >
                   Gestionar Correcciones
                 </Button>
-                {/* ------------------------------------------- */}
 
                 <Button
                   component={Link}
                   to="/sedes"
-                  variant={pathname.startsWith("/sedes") ? "contained" : "text"}
-                  color="primary"
+                  sx={navButtonStyle(pathname.startsWith("/sedes"))}
                 >
                   Sedes
                 </Button>
@@ -172,8 +180,7 @@ export default function App() {
                 <Button
                   component={Link}
                   to="/feriados"
-                  variant={pathname.startsWith("/feriados") ? "contained" : "text"}
-                  color="primary"
+                  sx={navButtonStyle(pathname.startsWith("/feriados"))}
                 >
                   Feriados
                 </Button>
@@ -181,26 +188,44 @@ export default function App() {
                 <Button
                   component={Link}
                   to="/auditoria"
-                  variant={pathname.startsWith("/auditoria") ? "contained" : "text"}
-                  color="primary"
+                  sx={navButtonStyle(pathname.startsWith("/auditoria"))}
                 >
                   Auditoría
                 </Button>
               </>
             )}
-            {/* --- FIN Botones SuperAdmin --- */}
           </Stack>
 
-          <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 1 }}>
+          {/* Espaciador */}
+          <Box sx={{ flexGrow: 1 }} />
+
+          {/* Usuario y Logo al lado derecho */}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
             {user && (
               <>
-                <Typography variant="body2" color="text.secondary" sx={{ display: { xs: "none", md: "block" } }}>
+                <Typography 
+                  variant="body2" 
+                  sx={{ 
+                    display: { xs: "none", md: "block" },
+                    color: "rgba(255, 255, 255, 0.9)",
+                    fontWeight: 500,
+                  }}
+                >
                   {user.nombreCompleto || user.email} · {user.rol}
                 </Typography>
 
                 <Tooltip title="Cuenta">
-                  <IconButton onClick={handleOpen} size="small" sx={{ ml: 1 }}>
-                    <Avatar sx={{ width: 32, height: 32 }}>
+                  <IconButton onClick={handleOpen} size="small">
+                    <Avatar 
+                      sx={{ 
+                        width: 36, 
+                        height: 36,
+                        backgroundColor: "#fff",
+                        color: "#e9501e",
+                        fontWeight: 700,
+                        boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+                      }}
+                    >
                       {user.email?.[0]?.toUpperCase() ?? "U"}
                     </Avatar>
                   </IconButton>
@@ -212,16 +237,25 @@ export default function App() {
                   onClose={handleClose}
                   transformOrigin={{ horizontal: "right", vertical: "top" }}
                   anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
+                  PaperProps={{
+                    sx: {
+                      mt: 1,
+                      minWidth: 200,
+                    }
+                  }}
                 >
                   <MenuItem disabled>
-                    <Typography variant="body2">{user.email}</Typography>
+                    <Typography variant="body2" fontWeight={600}>{user.nombreCompleto}</Typography>
                   </MenuItem>
                   <MenuItem disabled>
-                    <Typography variant="body2">Rol: {user.rol}</Typography>
+                    <Typography variant="body2" color="text.secondary">{user.email}</Typography>
+                  </MenuItem>
+                  <MenuItem disabled>
+                    <Typography variant="body2" color="text.secondary">Rol: {user.rol}</Typography>
                   </MenuItem>
                   {isAdmin && user.sedeNombre && (
                     <MenuItem disabled>
-                      <Typography variant="body2" sx={{ fontStyle: 'italic' }}>
+                      <Typography variant="body2" sx={{ fontStyle: 'italic', color: "#e9501e" }}>
                         Sede: {user.sedeNombre}
                       </Typography>
                     </MenuItem>
@@ -230,16 +264,41 @@ export default function App() {
                   <MenuItem onClick={handleOpenPassDialog}>
                     Cambiar contraseña
                   </MenuItem>
-                  <MenuItem onClick={goLogout}>Cerrar sesión</MenuItem>
+                  <MenuItem onClick={goLogout} sx={{ color: "#cc3625" }}>
+                    Cerrar sesión
+                  </MenuItem>
                 </Menu>
               </>
             )}
 
             {!user && (
-              <Button variant="outlined" onClick={() => nav("/login")}>
+              <Button 
+                variant="contained" 
+                onClick={() => nav("/login")}
+                sx={{ 
+                  backgroundColor: "#fff", 
+                  color: "#e9501e",
+                  "&:hover": { backgroundColor: "rgba(255,255,255,0.9)" }
+                }}
+              >
                 Iniciar sesión
               </Button>
             )}
+
+            {/* Logo a la derecha - MÁS GRANDE */}
+            <Box
+              component="img"
+              src="/logo-media-naranja.png"
+              alt="La Media Naranja"
+              sx={{ 
+                height: 55,  // Más grande
+                width: "auto",
+                filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.2))",
+                display: { xs: "none", sm: "block" },
+                ml: 1,
+              }}
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
           </Box>
         </Toolbar>
       </AppBar>
