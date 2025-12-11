@@ -105,7 +105,7 @@ public class MarcacionesController : ControllerBase
                 (double)usuario.Sede.Lat.Value,
                 (double)usuario.Sede.Lon.Value
             );
-            var maxRadioMetros = _config.GetValue<int?>("Marcacion:MaxDistanceMeters") ?? 200;
+            var maxRadioMetros = _config.GetValue<int?>("Marcacion:MaxDistanceMeters") ?? 50;
             if (dist > maxRadioMetros)
                 return BadRequest($"Fuera de geocerca: distancia {dist:F1} m > radio {maxRadioMetros} m.");
         }
