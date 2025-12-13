@@ -35,7 +35,7 @@ const theme = createTheme({
     MuiCssBaseline: {
       styleOverrides: {
         body: {
-          backgroundImage: "url('/fondo-corporativo.png')",
+          backgroundImage: "url('/fondo-corporativo.webp')", // <--- Ojo: Cambiar a .webp si ya convertiste la imagen
           backgroundSize: "100% auto",
           backgroundPosition: "bottom center",
           backgroundAttachment: "fixed",

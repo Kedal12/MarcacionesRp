@@ -1,4 +1,4 @@
-using MarcacionAPI.Data;
+锘縰sing MarcacionAPI.Data;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -6,40 +6,48 @@ using Microsoft.OpenApi.Models;
 using System.Security.Claims;
 using System.Text;
 using MarcacionAPI.Services;
-
-// --- A袮DIDOS PARA RATE LIMITING ---
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Connections; // Para StatusCodes
-
-// --- FIN A袮DIDOS ---
+using Microsoft.AspNetCore.ResponseCompression;
+using System.IO.Compression;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- A袮DIDO: escuchar en todas las interfaces, puerto 5000 ---
+// Escuchar en todas las interfaces, puerto 5000
 builder.WebHost.UseUrls("http://0.0.0.0:5000");
 
-// --- Configuraci髇 de Servicios ---
+// --- Configuraci贸n de Servicios ---
 
 // 1) DbContext
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// 2) CORS (Configuraci髇 permisiva para desarrollo)
+// 2) CORS: Pol铆tica "PermitirTodo" para que React conecte sin problemas
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("PermitirTodo", policy =>
     {
-        policy.AllowAnyOrigin()   // <--- ESTO ES LA CLAVE: Permite localhost:8081, IPs de red, etc.
+        policy.AllowAnyOrigin()   // Permite cualquier IP (React, Celular, etc.)
               .AllowAnyHeader()
               .AllowAnyMethod();
     });
 });
 
-//2.1) Inyecci髇 de dependencias para servicios
+// 2.1) Compresi贸n de respuestas
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<GzipCompressionProvider>();
+});
+
+builder.Services.Configure<GzipCompressionProviderOptions>(options =>
+{
+    options.Level = CompressionLevel.Fastest;
+});
+
+// 2.2) Inyecci贸n de dependencias
 builder.Services.AddScoped<IAsistenciaService, AsistenciaService>();
-//2.2) Inyecci髇 de dependencias para el nuevo servicio ResumenService
 builder.Services.AddScoped<IResumenService, ResumenService>();
 
 // 3) Auth JWT
@@ -66,7 +74,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 builder.Logging.AddConsole();
 
-// 4) Autorizaci髇
+// 4) Autorizaci贸n
 builder.Services.AddAuthorization();
 
 // 5) Controllers
@@ -94,7 +102,7 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// --- Rate Limiter ---
+// 7) Rate Limiter
 builder.Services.AddRateLimiter(options =>
 {
     options.AddFixedWindowLimiter(policyName: "loginPolicy", opt =>
@@ -104,32 +112,35 @@ builder.Services.AddRateLimiter(options =>
         opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
         opt.QueueLimit = 0;
     });
-
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 
-// --- Construcci髇 de la App ---
+// --- Construcci贸n de la App ---
 var app = builder.Build();
 
-// --- Pipeline HTTP ---
-if (app.Environment.IsDevelopment())
-{
-    app.UseDeveloperExceptionPage();
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+// --- Pipeline HTTP (ORDEN CORRECTO) ---
 
-// app.UseHttpsRedirection();
+// 鈿狅笍 CAMBIO IMPORTANTE: Swagger fuera del "if Development" para verlo en IIS
+app.UseSwagger();
+app.UseSwaggerUI();
 
-app.UseRouting();
+// 1. Compresi贸n
+app.UseResponseCompression();
 
+// 2. CORS (Vital: Debe ir antes de Routing y Auth)
 app.UseCors("PermitirTodo");
 
+// 3. Routing
+app.UseRouting();
+
+// 4. Rate Limiter
 app.UseRateLimiter();
 
+// 5. Autenticaci贸n y Autorizaci贸n
 app.UseAuthentication();
 app.UseAuthorization();
 
+// 6. Controllers
 app.MapControllers();
 
 app.Run();

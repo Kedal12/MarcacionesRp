@@ -1,34 +1,43 @@
 ﻿using MarcacionAPI.Data;
 using MarcacionAPI.DTOs;
-using MarcacionAPI.Models; // Añadido por si acaso
+using MarcacionAPI.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using MarcacionAPI.Utils; // Para Paging y Roles
-using MarcacionAPI.DTOs.Sedes; // Para DTOs de Sedes
+using MarcacionAPI.Utils;
+using MarcacionAPI.DTOs.Sedes;
+using System.Text.Json;
+using System.Security.Claims;
 
 namespace MarcacionAPI.Controllers;
 
-// --- MODIFICADO: Roles a nivel de clase ---
-[Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")] // admin y superadmin pueden acceder
+[Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
 [ApiController]
 [Route("api/[controller]")]
 public class SedesController : ControllerBase
 {
     private readonly ApplicationDbContext _context;
+    private readonly ILogger<SedesController> _logger;
 
-    public SedesController(ApplicationDbContext context) => _context = context;
+    public SedesController(ApplicationDbContext context, ILogger<SedesController> logger)
+    {
+        _context = context;
+        _logger = logger;
+    }
 
+    // ============================================================
     // GET api/sedes?search=&page=&pageSize=
-    // [Authorize(Roles = "admin,superadmin")] -> Hereda de la clase
+    // ============================================================
     [HttpGet]
-    public async Task<IActionResult> Get([FromQuery] string? search,
+    public async Task<IActionResult> Get(
+        [FromQuery] string? search,
         [FromQuery] int page = Paging.DefaultPage,
         [FromQuery] int pageSize = Paging.DefaultPageSize)
     {
         (page, pageSize) = Paging.Normalize(page, pageSize);
 
         var q = _context.Sedes.AsNoTracking().AsQueryable();
+
         if (!string.IsNullOrWhiteSpace(search))
         {
             var s = search.Trim().ToLower();
@@ -37,7 +46,6 @@ public class SedesController : ControllerBase
 
         var total = await q.CountAsync();
 
-        // Usuarios asignados a cada sede (subconsulta traducible por EF)
         var items = await q
             .OrderBy(x => x.Nombre)
             .Skip((page - 1) * pageSize)
@@ -55,8 +63,9 @@ public class SedesController : ControllerBase
         return Ok(new PagedResponse<object>(items, total, page, pageSize));
     }
 
+    // ============================================================
     // GET api/sedes/all  (para combos)
-    // [Authorize(Roles = "admin,superadmin")] -> Hereda de la clase
+    // ============================================================
     [HttpGet("all")]
     public async Task<IActionResult> GetAll()
     {
@@ -64,98 +73,260 @@ public class SedesController : ControllerBase
             .OrderBy(x => x.Nombre)
             .Select(x => new { x.Id, x.Nombre })
             .ToListAsync();
+
         return Ok(items);
     }
 
+    // ============================================================
     // GET api/sedes/{id}
-    // [Authorize(Roles = "admin,superadmin")] -> Hereda de la clase
+    // ============================================================
     [HttpGet("{id:int}")]
     public async Task<IActionResult> GetById(int id)
     {
-        var s = await _context.Sedes.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
+        var s = await _context.Sedes.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == id);
+
         return s is null ? NotFound() : Ok(s);
     }
 
+    // ============================================================
     // POST api/sedes
-    // --- AÑADIDO: Restringir solo a SuperAdmin ---
+    // ============================================================
     [Authorize(Roles = Roles.SuperAdmin)]
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] SedeCreateDto dto)
     {
-        if (string.IsNullOrWhiteSpace(dto.Nombre)) return BadRequest("Nombre es obligatorio.");
+        try
+        {
+            if (string.IsNullOrWhiteSpace(dto.Nombre))
+                return BadRequest("Nombre es obligatorio.");
 
-        var exists = await _context.Sedes.AnyAsync(x => x.Nombre == dto.Nombre);
-        if (exists) return Conflict("Ya existe una sede con ese nombre.");
+            var exists = await _context.Sedes.AnyAsync(x => x.Nombre == dto.Nombre);
+            if (exists)
+                return Conflict("Ya existe una sede con ese nombre.");
 
-        if (dto.Lat is < -90 or > 90) return BadRequest("Latitud inválida.");
-        if (dto.Lon is < -180 or > 180) return BadRequest("Longitud inválida.");
+            if (dto.Lat is < -90 or > 90)
+                return BadRequest("Latitud inválida.");
 
-        var s = new Models.Sede { Nombre = dto.Nombre.Trim(), Lat = dto.Lat, Lon = dto.Lon };
-        _context.Sedes.Add(s);
-        // ... (Auditoría opcional aquí) ...
-        await _context.SaveChangesAsync();
+            if (dto.Lon is < -180 or > 180)
+                return BadRequest("Longitud inválida.");
 
-        return CreatedAtAction(nameof(GetById), new { id = s.Id }, s);
+            var s = new Sede
+            {
+                Nombre = dto.Nombre.Trim(),
+                Lat = dto.Lat,
+                Lon = dto.Lon
+            };
+
+            _context.Sedes.Add(s);
+
+            // ✅ GUARDAR PRIMERO para obtener el ID
+            await _context.SaveChangesAsync();
+
+            // Auditoría (DESPUÉS de tener el ID)
+            var idAdmin = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (int.TryParse(idAdmin, out int adminId))
+            {
+                _context.Auditorias.Add(new Auditoria
+                {
+                    IdUsuarioAdmin = adminId,
+                    Accion = "sede.create",
+                    Entidad = "Sede",
+                    EntidadId = s.Id, // ✅ Ahora sí tiene ID
+                    DataJson = JsonSerializer.Serialize(new { s.Nombre, s.Lat, s.Lon })
+                });
+
+                await _context.SaveChangesAsync();
+            }
+
+            _logger.LogInformation("Sede creada: {Nombre} (ID: {Id})", s.Nombre, s.Id);
+
+            return CreatedAtAction(nameof(GetById), new { id = s.Id }, s);
+        }
+        catch (DbUpdateException dbEx)
+        {
+            _logger.LogError(dbEx, "Error de base de datos al crear sede");
+            return StatusCode(500, new
+            {
+                mensaje = "Error al guardar en la base de datos",
+                error = dbEx.InnerException?.Message ?? dbEx.Message
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error inesperado al crear sede");
+            return StatusCode(500, new
+            {
+                mensaje = "Error interno del servidor",
+                error = ex.Message,
+                detalle = ex.InnerException?.Message ?? "Sin detalles"
+            });
+        }
     }
 
+    // ============================================================
     // PUT api/sedes/{id}
-    // --- AÑADIDO: Restringir solo a SuperAdmin ---
+    // ============================================================
     [Authorize(Roles = Roles.SuperAdmin)]
     [HttpPut("{id:int}")]
     public async Task<IActionResult> Update(int id, [FromBody] SedeUpdateDto dto)
     {
-        var s = await _context.Sedes.FirstOrDefaultAsync(x => x.Id == id);
-        if (s is null) return NotFound();
+        try
+        {
+            var s = await _context.Sedes.FirstOrDefaultAsync(x => x.Id == id);
+            if (s is null)
+                return NotFound();
 
-        if (string.IsNullOrWhiteSpace(dto.Nombre)) return BadRequest("Nombre es obligatorio.");
-        var exists = await _context.Sedes.AnyAsync(x => x.Id != id && x.Nombre == dto.Nombre);
-        if (exists) return Conflict("Ya existe una sede con ese nombre.");
+            if (string.IsNullOrWhiteSpace(dto.Nombre))
+                return BadRequest("Nombre es obligatorio.");
 
-        if (dto.Lat is < -90 or > 90) return BadRequest("Latitud inválida.");
-        if (dto.Lon is < -180 or > 180) return BadRequest("Longitud inválida.");
+            var exists = await _context.Sedes.AnyAsync(x => x.Id != id && x.Nombre == dto.Nombre);
+            if (exists)
+                return Conflict("Ya existe una sede con ese nombre.");
 
-        s.Nombre = dto.Nombre.Trim();
-        s.Lat = dto.Lat;
-        s.Lon = dto.Lon;
-        // ... (Auditoría opcional aquí) ...
-        await _context.SaveChangesAsync();
-        return NoContent();
+            if (dto.Lat is < -90 or > 90)
+                return BadRequest("Latitud inválida.");
+
+            if (dto.Lon is < -180 or > 180)
+                return BadRequest("Longitud inválida.");
+
+            s.Nombre = dto.Nombre.Trim();
+            s.Lat = dto.Lat;
+            s.Lon = dto.Lon;
+
+            // Auditoría
+            var idAdmin = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (int.TryParse(idAdmin, out int adminId))
+            {
+                _context.Auditorias.Add(new Auditoria
+                {
+                    IdUsuarioAdmin = adminId,
+                    Accion = "sede.update",
+                    Entidad = "Sede",
+                    EntidadId = s.Id,
+                    DataJson = JsonSerializer.Serialize(dto)
+                });
+            }
+
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Sede actualizada: {Id}", id);
+
+            return NoContent();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error al actualizar sede {Id}", id);
+            return StatusCode(500, new
+            {
+                mensaje = "Error al actualizar la sede",
+                error = ex.Message
+            });
+        }
     }
 
+    // ============================================================
     // PATCH api/sedes/{id}/coordenadas
-    // --- AÑADIDO: Restringir solo a SuperAdmin ---
+    // ============================================================
     [Authorize(Roles = Roles.SuperAdmin)]
     [HttpPatch("{id:int}/coordenadas")]
     public async Task<IActionResult> UpdateCoords(int id, [FromBody] SedeCoordsDto dto)
     {
-        var s = await _context.Sedes.FirstOrDefaultAsync(x => x.Id == id);
-        if (s is null) return NotFound();
+        try
+        {
+            var s = await _context.Sedes.FirstOrDefaultAsync(x => x.Id == id);
+            if (s is null)
+                return NotFound();
 
-        if (dto.Lat is < -90 or > 90) return BadRequest("Latitud inválida.");
-        if (dto.Lon is < -180 or > 180) return BadRequest("Longitud inválida.");
+            if (dto.Lat is < -90 or > 90)
+                return BadRequest("Latitud inválida.");
 
-        s.Lat = dto.Lat;
-        s.Lon = dto.Lon;
-        // ... (Auditoría opcional aquí) ...
-        await _context.SaveChangesAsync();
-        return NoContent();
+            if (dto.Lon is < -180 or > 180)
+                return BadRequest("Longitud inválida.");
+
+            s.Lat = dto.Lat;
+            s.Lon = dto.Lon;
+
+            // Auditoría
+            var idAdmin = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (int.TryParse(idAdmin, out int adminId))
+            {
+                _context.Auditorias.Add(new Auditoria
+                {
+                    IdUsuarioAdmin = adminId,
+                    Accion = "sede.update-coords",
+                    Entidad = "Sede",
+                    EntidadId = s.Id,
+                    DataJson = JsonSerializer.Serialize(dto)
+                });
+            }
+
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation("Coordenadas de sede {Id} actualizadas", id);
+
+            return NoContent();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error al actualizar coordenadas de sede {Id}", id);
+            return StatusCode(500, new
+            {
+                mensaje = "Error al actualizar las coordenadas",
+                error = ex.Message
+            });
+        }
     }
 
+    // ============================================================
     // DELETE api/sedes/{id}
-    // --- AÑADIDO: Restringir solo a SuperAdmin ---
+    // ============================================================
     [Authorize(Roles = Roles.SuperAdmin)]
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
-        var s = await _context.Sedes.FirstOrDefaultAsync(x => x.Id == id);
-        if (s is null) return NotFound();
+        try
+        {
+            var s = await _context.Sedes.FirstOrDefaultAsync(x => x.Id == id);
+            if (s is null)
+                return NotFound();
 
-        var tieneUsuarios = await _context.Usuarios.AnyAsync(u => u.IdSede == id);
-        if (tieneUsuarios) return Conflict("No se puede eliminar: la sede tiene usuarios asignados.");
+            var tieneUsuarios = await _context.Usuarios.AnyAsync(u => u.IdSede == id);
+            if (tieneUsuarios)
+                return Conflict("No se puede eliminar: la sede tiene usuarios asignados.");
 
-        _context.Sedes.Remove(s);
-        // ... (Auditoría opcional aquí) ...
-        await _context.SaveChangesAsync();
-        return NoContent();
+            var sedeData = new { s.Id, s.Nombre };
+
+            _context.Sedes.Remove(s);
+
+            // Auditoría
+            var idAdmin = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (int.TryParse(idAdmin, out int adminId))
+            {
+                _context.Auditorias.Add(new Auditoria
+                {
+                    IdUsuarioAdmin = adminId,
+                    Accion = "sede.delete",
+                    Entidad = "Sede",
+                    EntidadId = id,
+                    DataJson = JsonSerializer.Serialize(sedeData)
+                });
+            }
+
+            await _context.SaveChangesAsync();
+
+            _logger.LogWarning("Sede eliminada: {Id} - {Nombre}", id, sedeData.Nombre);
+
+            return NoContent();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error al eliminar sede {Id}", id);
+            return StatusCode(500, new
+            {
+                mensaje = "Error al eliminar la sede",
+                error = ex.Message
+            });
+        }
     }
 }

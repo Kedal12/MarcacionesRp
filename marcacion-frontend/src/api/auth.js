@@ -23,10 +23,18 @@ export async function me() {
   return data;
 }
 
-/** (Opcional) registrar usuario desde el panel admin */
+/** (Opcional) registrar usuario desde el panel admin 
+ * CORREGIDO: Ahora usa la ruta /api/auth/register que sí funciona
+ */
 export async function register({ nombreCompleto, email, password, rol, idSede, tipoDocumento, numeroDocumento }) {
-  const { data } = await api.post("/api/usuarios", {
-    nombreCompleto, email, password, rol, idSede, tipoDocumento, numeroDocumento // <--- Agrégalos aquí
+  const { data } = await api.post("/api/auth/register", {
+    nombreCompleto, 
+    email, 
+    password, 
+    rol, 
+    idSede, 
+    tipoDocumento, 
+    numeroDocumento
   });
   return data;
 }

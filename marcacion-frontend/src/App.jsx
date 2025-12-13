@@ -3,9 +3,11 @@ import {
   AppBar, Toolbar, Typography, Button, Container, Stack,
   Box, Avatar, Tooltip, IconButton, Menu, MenuItem, Divider
 } from "@mui/material";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "./auth/AuthContext";
 import ChangePasswordDialog from "./components/ChangePasswordDialog";
+import api from "./api/axios";
 
 const ROLES = {
   SUPERADMIN: "superadmin",
@@ -17,6 +19,7 @@ export default function App() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
   const { pathname } = useLocation();
+  const queryClient = useQueryClient();
 
   const role = (user?.rol || "").toLowerCase();
   const isAdmin = role === ROLES.ADMIN;
@@ -39,6 +42,45 @@ export default function App() {
     handleClose();
     setOpenPassDialog(true);
   };
+
+  // ✅ Prefetch de datos comunes al cargar la app
+  useEffect(() => {
+    if (user) {
+      // Prefetch sedes (datos estáticos usados en dropdowns)
+      queryClient.prefetchQuery({
+        queryKey: ['sedes'],
+        queryFn: async () => {
+          const response = await api.get('/api/sedes');
+          return response.data;
+        },
+        staleTime: 10 * 60 * 1000, // Cache por 10 minutos
+      });
+
+      // Prefetch horarios para dropdowns
+      queryClient.prefetchQuery({
+        queryKey: ['horarios'],
+        queryFn: async () => {
+          const response = await api.get('/api/horarios');
+          return response.data;
+        },
+        staleTime: 5 * 60 * 1000,
+      });
+
+      // Si es admin o superadmin, prefetch usuarios (primera página)
+      if (isAdmin || isSuperAdmin) {
+        queryClient.prefetchQuery({
+          queryKey: ['usuarios', 1, ''],
+          queryFn: async () => {
+            const response = await api.get('/api/usuarios', {
+              params: { page: 1, pageSize: 10 }
+            });
+            return response.data;
+          },
+          staleTime: 2 * 60 * 1000,
+        });
+      }
+    }
+  }, [user, isAdmin, isSuperAdmin, queryClient]);
 
   // Estilo para botones del navbar
   const navButtonStyle = (isActive) => ({
@@ -285,13 +327,13 @@ export default function App() {
               </Button>
             )}
 
-            {/* Logo a la derecha - MÁS GRANDE */}
+            {/* Logo a la derecha */}
             <Box
               component="img"
               src="/logo-media-naranja.png"
               alt="La Media Naranja"
               sx={{ 
-                height: 55,  // Más grande
+                height: 55,
                 width: "auto",
                 filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.2))",
                 display: { xs: "none", sm: "block" },
