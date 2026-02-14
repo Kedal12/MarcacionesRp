@@ -24,6 +24,23 @@ if (!rawApiUrl) {
 const API_URL = rawApiUrl ? rawApiUrl.replace(/\/+$/, '') : '';
 console.log('[axios] Usando API_URL =', API_URL);
 
+// ===== Endpoints que NO deben limpiar el token en 401 =====
+// Estos endpoints pueden retornar 401 como parte de su flujo normal (ej: rostro no coincide)
+const AUTH_ENDPOINTS = [
+  '/api/auth/login',
+  '/api/auth/login-facial',
+  '/api/auth/verificar-documento',
+  '/api/auth/register',
+];
+
+/**
+ * Verifica si la URL es un endpoint de autenticación
+ */
+const isAuthEndpoint = (url: string | undefined): boolean => {
+  if (!url) return false;
+  return AUTH_ENDPOINTS.some(endpoint => url.includes(endpoint));
+};
+
 // ===== Instancia Axios =====
 const api: AxiosInstance = axios.create({
   baseURL: API_URL,
@@ -31,7 +48,7 @@ const api: AxiosInstance = axios.create({
   headers: {
     'Content-Type': 'application/json',
     Accept: 'application/json',
-    // ✅ AGREGADO: Header para ngrok
+    // ✅ Header para ngrok
     'ngrok-skip-browser-warning': 'true',
   },
 });
@@ -68,8 +85,25 @@ api.interceptors.response.use(
   async (error: AxiosError): Promise<never> => {
     const status = error.response?.status;
     const originalRequest = error.config as RetryableRequest | undefined;
+    const requestUrl = originalRequest?.url;
 
+    // ✅ CORREGIDO: No limpiar token si es un endpoint de autenticación
+    // Estos endpoints pueden retornar 401 como parte de su flujo normal
+    // (ej: login-facial retorna 401 cuando el rostro no coincide)
     if (status === 401 && originalRequest && !originalRequest._retry) {
+      
+      // Si es un endpoint de auth, NO limpiar el token
+      if (isAuthEndpoint(requestUrl)) {
+        console.warn('[axios][response] 401 en endpoint de auth (no se limpia token):', requestUrl);
+        
+        // Extraer mensaje de error del backend si existe
+        const errorData = error.response?.data as any;
+        const mensaje = errorData?.mensaje || errorData?.message || 'Credenciales inválidas';
+        
+        return Promise.reject(new Error(mensaje));
+      }
+
+      // Para otros endpoints (401 = token inválido/expirado), sí limpiar
       console.warn('[axios][response] 401 detectado: limpiando token');
       originalRequest._retry = true;
       try {
@@ -77,13 +111,14 @@ api.interceptors.response.use(
       } catch (e) {
         console.error('[axios] Error borrando token tras 401:', e);
       }
-      return Promise.reject(new Error('Unauthorized - Token limpiado'));
+      return Promise.reject(new Error('Sesión expirada - Por favor inicia sesión nuevamente'));
     }
 
-    console.error(
-      '[axios][response] error:',
-      error.response?.data ?? error.message
-    );
+    // Manejar otros errores
+    const errorData = error.response?.data as any;
+    const errorMessage = errorData?.mensaje || errorData?.message || error.message;
+    
+    console.error('[axios][response] error:', errorData ?? error.message);
     return Promise.reject(error);
   }
 );

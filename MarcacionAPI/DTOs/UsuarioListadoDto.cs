@@ -1,14 +1,24 @@
-﻿namespace MarcacionAPI.DTOs;
+namespace MarcacionAPI.DTOs;
 
 public class UsuarioListadoDto
 {
     public int Id { get; set; }
+
     public string NombreCompleto { get; set; } = string.Empty;
+
     public string Email { get; set; } = string.Empty;
+
     public string Rol { get; set; } = string.Empty;
+
     public int IdSede { get; set; }
+
     public string? SedeNombre { get; set; }
+
     public bool Activo { get; set; }
+
     public string? TipoDocumento { get; set; }
+
     public string? NumeroDocumento { get; set; }
+    public bool BiometriaHabilitada { get; set; }
+    public DateTime? BiometriaFechaRegistro { get; set; }
 }

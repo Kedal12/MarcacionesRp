@@ -7,7 +7,12 @@ import React, {
   useState,
 } from 'react';
 
-import { loginMobile as apiLoginMobile, me as apiMe } from '@/src/api/auth';
+// Se importan las nuevas funciones de API para biometría
+import {
+  loginFacial as apiLoginFacial,
+  loginMobile as apiLoginMobile,
+  me as apiMe
+} from '@/src/api/auth';
 import { tokenCache } from '@/src/utils/tokenStorage';
 
 const TOKEN_KEY = 'auth-token';
@@ -21,6 +26,7 @@ interface UserData {
   numeroDocumento?: string;
   idSede?: number;
   sedeNombre?: string;
+  biometriaHabilitada?: boolean; // Campo necesario para lógica en UI
 }
 
 interface AuthContextType {
@@ -28,6 +34,7 @@ interface AuthContextType {
   user: UserData | null;
   isLoading: boolean;
   loginWithDocument: (numeroDocumento: string) => Promise<boolean>;
+  loginWithFace: (numeroDocumento: string, fotoBase64: string) => Promise<boolean>; // Nuevo método
   logout: () => Promise<void>;
 }
 
@@ -74,22 +81,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     bootstrapAsync();
   }, []);
 
-  // ✅ NUEVO: Login solo con número de documento
+  // Login tradicional por documento
   const loginWithDocument = async (numeroDocumento: string): Promise<boolean> => {
     setAuthState((s) => ({ ...s, isLoading: true, user: null }));
     try {
       console.log('[Auth] Iniciando login con documento...');
-      
       const response = await apiLoginMobile(numeroDocumento);
       
-      if (!response.token) {
-        throw new Error('No se recibió token del servidor.');
-      }
+      if (!response.token) throw new Error('No se recibió token del servidor.');
 
-      // Guardamos el token
       await tokenCache.saveToken(TOKEN_KEY, response.token);
 
-      // Usamos los datos del usuario que vienen en la respuesta
       const userData: UserData = {
         id: response.usuario.id,
         email: response.usuario.email,
@@ -100,7 +102,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       };
 
       setAuthState({ token: response.token, user: userData, isLoading: false });
-      console.log('[Auth] Login exitoso:', userData.nombreCompleto);
       return true;
     } catch (error: any) {
       console.error('[Auth] Error en login:', error?.message ?? error);
@@ -110,7 +111,40 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  // Acción: Logout
+  // ✅ NUEVO: Login con reconocimiento facial
+  const loginWithFace = async (numeroDocumento: string, fotoBase64: string): Promise<boolean> => {
+    setAuthState((s) => ({ ...s, isLoading: true, user: null }));
+    try {
+      console.log('[Auth] Iniciando login facial...');
+      
+      const response = await apiLoginFacial(numeroDocumento, fotoBase64);
+      
+      if (!response.token) throw new Error('No se recibió token.');
+
+      await tokenCache.saveToken(TOKEN_KEY, response.token);
+
+      // Mapeo de datos del usuario desde la respuesta facial
+      const userData: UserData = {
+        id: response.user.id,
+        email: response.user.email,
+        rol: response.user.rol,
+        nombreCompleto: response.user.nombreCompleto,
+        numeroDocumento: response.user.numeroDocumento,
+        sedeNombre: response.user.sedeNombre ?? undefined,
+        biometriaHabilitada: response.user.biometriaHabilitada
+      };
+
+      setAuthState({ token: response.token, user: userData, isLoading: false });
+      console.log('[Auth] Login facial exitoso:', userData.nombreCompleto);
+      return true;
+    } catch (error: any) {
+      console.error('[Auth] Error en login facial:', error?.message ?? error);
+      await tokenCache.deleteToken(TOKEN_KEY);
+      setAuthState({ token: null, user: null, isLoading: false });
+      throw error;
+    }
+  };
+
   const logout = async (): Promise<void> => {
     setAuthState((s) => ({ ...s, isLoading: true }));
     try {
@@ -129,6 +163,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       user: authState.user,
       isLoading: authState.isLoading,
       loginWithDocument,
+      loginWithFace, // Se expone el nuevo método
       logout,
     }),
     [authState]
@@ -137,11 +172,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
-// ===== Hook =====
 export const useAuth = (): AuthContextType => {
   const ctx = useContext(AuthContext);
-  if (!ctx) {
-    throw new Error('useAuth debe ser usado dentro de un AuthProvider');
-  }
+  if (!ctx) throw new Error('useAuth debe ser usado dentro de un AuthProvider');
   return ctx;
 };

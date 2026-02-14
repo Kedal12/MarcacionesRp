@@ -1,7 +1,5 @@
-﻿namespace MarcacionAPI.DTOs;
+using System.ComponentModel.DataAnnotations;
 
-public class ChangePasswordDto
-{
-    public string CurrentPassword { get; set; } = "";
-    public string NewPassword { get; set; } = "";
-}
+namespace MarcacionAPI.DTOs;
+
+public record ChangePasswordDto([Required] string CurrentPassword, [Required][MinLength(6)] string NewPassword);

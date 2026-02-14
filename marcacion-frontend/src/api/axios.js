@@ -2,7 +2,7 @@ import axios from "axios";
 
 // En desarrollo: usa VITE_API_URL (https://localhost:7042)
 // En producción (mismo dominio): baseURL vacío -> llamará a "/api/..."
-const baseURL = import.meta.env.DEV ? (import.meta.env.VITE_API_URL || "") : "";
+const baseURL = import.meta.env.VITE_API_URL || "";
 
 const api = axios.create({
   baseURL,

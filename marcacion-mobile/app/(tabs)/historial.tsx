@@ -49,6 +49,16 @@ export default function HistorialScreen() {
         pageSize: 100,
         page: 1,
       });
+      
+      console.log('[Historial] Marcaciones recibidas:', response.items?.length);
+      // Debug: ver la primera marcación para verificar formato de fechas
+      if (response.items?.length > 0) {
+        console.log('[Historial] Ejemplo de marcación:', {
+          fechaHoraUtc: response.items[0].fechaHoraUtc,
+          fechaHoraLocal: response.items[0].fechaHoraLocal,
+        });
+      }
+      
       setMarcaciones(response.items || []);
     } catch (err) {
       console.error('Error fetching historial:', err);
@@ -99,8 +109,27 @@ export default function HistorialScreen() {
     }
   };
 
+  /**
+   * Formatea la fecha de la marcación usando fechaHoraLocal del backend
+   */
+  const formatMarcacionFecha = (item: Marcacion): string => {
+    // Preferir fechaHoraLocal (ya convertida por el backend)
+    const fecha = item.fechaHoraLocal || item.fechaHoraUtc;
+    const parsed = parseBackendDate(fecha);
+    return parsed?.format('DD/MM/YYYY HH:mm:ss') ?? '--';
+  };
+
+  /**
+   * Formatea la hora de almuerzo
+   */
+  const formatAlmuerzoHora = (fecha: string | null | undefined): string => {
+    if (!fecha) return '--';
+    const parsed = parseBackendDate(fecha);
+    return parsed?.format('HH:mm') ?? '--';
+  };
+
   const renderItem = ({ item }: { item: Marcacion }) => (
-    <ListItem key={item.id} bottomDivider containerStyle={styles.listItemContainer}>
+    <ListItem bottomDivider containerStyle={styles.listItemContainer}>
       <Icon
         name={item.tipo === 'entrada' ? 'log-in-outline' : 'log-out-outline'}
         type="ionicon"
@@ -112,18 +141,18 @@ export default function HistorialScreen() {
         </ListItem.Title>
 
         <ListItem.Subtitle style={styles.itemSubtitle}>
-          {parseBackendDate(item.fechaHoraLocal)?.format('DD/MM/YYYY HH:mm:ss') ?? '--'}
+          {formatMarcacionFecha(item)}
         </ListItem.Subtitle>
 
         {item.tipo === 'entrada' && item.inicioAlmuerzoLocal && (
           <View style={styles.almuerzoInfoContainer}>
             <Icon name="fast-food" type="ionicon" size={16} color={CorporateColors.secondary} />
             <Text style={styles.almuerzoInfoText}>
-              Almuerzo: {parseBackendDate(item.inicioAlmuerzoLocal)?.format('HH:mm')}
+              Almuerzo: {formatAlmuerzoHora(item.inicioAlmuerzoLocal)}
               {item.finAlmuerzoLocal && (
                 <>
                   {' - '}
-                  {parseBackendDate(item.finAlmuerzoLocal)?.format('HH:mm')}
+                  {formatAlmuerzoHora(item.finAlmuerzoLocal)}
                   {' '}
                   ({item.tiempoAlmuerzoMinutos} min)
                 </>
@@ -171,7 +200,7 @@ export default function HistorialScreen() {
                 title={`Desde: ${dayjs(desde).format('DD/MM/YYYY')}`}
                 type="outline"
                 onPress={() => showDatePicker('desde')}
-                icon={<Icon name="calendar" type="ionicon" size={18} color={CorporateColors.primary} iconStyle={{ marginRight: 6 }} />}
+                icon={<Icon name="calendar" type="ionicon" size={18} color={CorporateColors.primary} style={{ marginRight: 6 }} />}
                 containerStyle={styles.filterBtn}
                 buttonStyle={styles.filterBtnStyle}
                 titleStyle={styles.filterBtnTitle}
@@ -180,7 +209,7 @@ export default function HistorialScreen() {
                 title={`Hasta: ${dayjs(hasta).format('DD/MM/YYYY')}`}
                 type="outline"
                 onPress={() => showDatePicker('hasta')}
-                icon={<Icon name="calendar" type="ionicon" size={18} color={CorporateColors.primary} iconStyle={{ marginRight: 6 }} />}
+                icon={<Icon name="calendar" type="ionicon" size={18} color={CorporateColors.primary} style={{ marginRight: 6 }} />}
                 containerStyle={styles.filterBtn}
                 buttonStyle={styles.filterBtnStyle}
                 titleStyle={styles.filterBtnTitle}
@@ -197,7 +226,7 @@ export default function HistorialScreen() {
           <FlatList
             data={marcaciones}
             renderItem={renderItem}
-            keyExtractor={(item) => item.id.toString()}
+            keyExtractor={(item) => `marcacion-${item.id}`}
             style={styles.list}
             contentContainerStyle={{ paddingBottom: 24 }}
             ItemSeparatorComponent={() => <View style={styles.separator} />}

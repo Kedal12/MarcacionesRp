@@ -1,4 +1,5 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System;
+using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace MarcacionAPI.Models;
@@ -8,38 +9,36 @@ public class Marcacion
     [Key]
     public int Id { get; set; }
 
-    [ForeignKey(nameof(Usuario))]
+    [ForeignKey("Usuario")]
     public int IdUsuario { get; set; }
 
     public DateTimeOffset FechaHora { get; set; } = DateTimeOffset.UtcNow;
 
-    // Valida "entrada" o "salida" a nivel de servicio/controlador (ver abajo)
-    [Required, MaxLength(20)]
+    [Required]
+    [MaxLength(20)]
     public string Tipo { get; set; } = string.Empty;
 
-    // Fijamos precisión en OnModelCreating
     public decimal LatitudMarcacion { get; set; }
 
     public decimal LongitudMarcacion { get; set; }
 
-    // ========== NUEVOS CAMPOS PARA ALMUERZO ==========
-    /// <summary>
-    /// Fecha y hora de inicio del almuerzo (nullable)
-    /// </summary>
     public DateTimeOffset? InicioAlmuerzo { get; set; }
 
-    /// <summary>
-    /// Fecha y hora de fin del almuerzo (nullable)
-    /// </summary>
     public DateTimeOffset? FinAlmuerzo { get; set; }
 
-    /// <summary>
-    /// Duración del almuerzo en minutos (calculado automáticamente)
-    /// </summary>
     public int? TiempoAlmuerzoMinutos { get; set; }
 
-    // ==================================================
-
-    // ¡Sin new!
     public Usuario? Usuario { get; set; }
+
+    // Campos para recargos (Ley 2466 de 2025)
+    public double? HorasExtraDiurnas { get; set; }
+
+    public double? HorasExtraNocturnas { get; set; }
+    public double? HorasRecargoNocturnoOrdinario { get; set; }
+    public bool RecargosCalculados { get; set; } = false;
+
+    // NUEVO: Validaci�n biom�trica
+    public bool ValidadoConBiometria { get; set; } = false;
+
+    public string? DispositivoUsado { get; set; }
 }

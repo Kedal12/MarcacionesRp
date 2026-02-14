@@ -1,12 +1,15 @@
-﻿using MarcacionAPI.Data;
+using MarcacionAPI.Data;
 using MarcacionAPI.DTOs;
 using MarcacionAPI.Models;
+using MarcacionAPI.Services;
+using MarcacionAPI.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
-using MarcacionAPI.Utils;
 using ClosedXML.Excel;
+
+namespace MarcacionAPI.Controllers;
 
 [Authorize]
 [ApiController]
@@ -15,20 +18,28 @@ public class MarcacionesController : ControllerBase
 {
     private readonly ApplicationDbContext _context;
     private readonly IConfiguration _config;
+    private readonly ILogger<MarcacionesController> _logger;
+    private readonly IRecargosService _recargosService;
+    private static readonly TimeSpan VentanaAntirebote = TimeSpan.FromMinutes(3.0);
 
-    private static readonly TimeSpan VentanaAntirebote = TimeSpan.FromMinutes(3);
-
-    public MarcacionesController(ApplicationDbContext context, IConfiguration config)
+    public MarcacionesController(
+        ApplicationDbContext context,
+        IConfiguration config,
+        ILogger<MarcacionesController> logger,
+        IRecargosService recargosService)
     {
         _context = context;
         _config = config;
+        _logger = logger;
+        _recargosService = recargosService;
     }
 
-    // ==== Helpers (TUYOS + NUEVO) ====
+    #region Helpers
+
     private static int? TryGetUserId(ClaimsPrincipal user)
     {
         var s = user.FindFirstValue(ClaimTypes.NameIdentifier);
-        return int.TryParse(s, out var id) ? id : null;
+        return int.TryParse(s, out var result) ? result : null;
     }
 
     private static TimeZoneInfo TzBogota()
@@ -37,629 +48,555 @@ public class MarcacionesController : ControllerBase
         catch { return TimeZoneInfo.FindSystemTimeZoneById("SA Pacific Standard Time"); }
     }
 
-    // --- NUEVO HELPER REQUERIDO ---
     private (DateTimeOffset utcStart, DateTimeOffset utcEnd) GetBogotaUtcWindowToday()
     {
         var tz = TzBogota();
         var nowUtc = DateTimeOffset.UtcNow;
         var nowBog = TimeZoneInfo.ConvertTime(nowUtc, tz);
         var startBog = new DateTimeOffset(nowBog.Date, tz.GetUtcOffset(nowBog));
-        var endBog = startBog.AddDays(1);
+        var endBog = startBog.AddDays(1.0);
         return (startBog.ToUniversalTime(), endBog.ToUniversalTime());
     }
 
-    // --- NUEVO HELPER DE CONVERSIÓN ---
-    /// <summary>
-    /// Convierte un DateTimeOffset UTC a la zona horaria de Bogotá.
-    /// </summary>
     private DateTimeOffset? ConvertToBogota(DateTimeOffset? utcDate, TimeZoneInfo tz)
     {
         if (!utcDate.HasValue) return null;
         return TimeZoneInfo.ConvertTime(utcDate.Value, tz);
     }
 
-    // ===========================================
-    // 1) Crear marcación (empleado) - VERSIÓN CORREGIDA
-    // ===========================================
+    #endregion Helpers
+
+    // ========================================
+    // MARCACIÓN (TRADICIONAL Y FACIAL)
+    // ========================================
+
     [HttpPost]
     public async Task<IActionResult> CrearMarcacion([FromBody] MarcacionDto marcacionDto)
     {
-        // ... (Tu lógica de validación, anti-rebote y geocerca no cambia) ...
-        var idUsuarioClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (string.IsNullOrWhiteSpace(idUsuarioClaim)) return Unauthorized();
-        var idUsuario = int.Parse(idUsuarioClaim);
+        var idUsuarioStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrWhiteSpace(idUsuarioStr)) return Unauthorized();
+        int idUsuario = int.Parse(idUsuarioStr);
 
         var tipo = marcacionDto.Tipo?.Trim().ToLowerInvariant();
         if (tipo is not ("entrada" or "salida")) return BadRequest("Tipo debe ser 'entrada' o 'salida'.");
+
         if (marcacionDto.Latitud is < -90 or > 90) return BadRequest("Latitud inválida.");
         if (marcacionDto.Longitud is < -180 or > 180) return BadRequest("Longitud inválida.");
 
         var ahoraUtc = DateTimeOffset.UtcNow;
 
-        var usuario = await _context.Usuarios.AsNoTracking()
+        var usuario = await _context.Usuarios
             .Include(u => u.Sede)
             .FirstOrDefaultAsync(u => u.Id == idUsuario && u.Activo);
-        if (usuario is null) return Unauthorized("Usuario no válido o inactivo.");
 
+        if (usuario == null) return Unauthorized("Usuario no válido o inactivo.");
+
+        // Anti-rebote
         var ultima = await _context.Marcaciones.AsNoTracking()
             .Where(m => m.IdUsuario == idUsuario)
             .OrderByDescending(m => m.FechaHora)
             .FirstOrDefaultAsync();
 
-        if (ultima is not null && ultima.Tipo == tipo)
+        if (ultima != null && ultima.Tipo == tipo)
         {
             var transcurrido = ahoraUtc - ultima.FechaHora;
             if (transcurrido < VentanaAntirebote)
             {
                 var restante = VentanaAntirebote - transcurrido;
-                var faltan = $"{(int)restante.TotalMinutes:D2}:{restante.Seconds:D2}";
-                return BadRequest($"Ya registraste una '{tipo}' hace {(int)transcurrido.TotalSeconds} segundos. Intenta de nuevo en {faltan}.");
+                return BadRequest($"Ya registraste una '{tipo}' hace {(int)transcurrido.TotalSeconds} segundos. Intenta de nuevo en {restante.Minutes:D2}:{restante.Seconds:D2}.");
             }
         }
 
-        if (usuario.Sede is not null && usuario.Sede.Lat.HasValue && usuario.Sede.Lon.HasValue)
+        // Geocerca
+        if (usuario.Sede?.Lat.HasValue == true && usuario.Sede.Lon.HasValue)
         {
-            var dist = Geo.DistanceMeters(
-                (double)marcacionDto.Latitud,
-                (double)marcacionDto.Longitud,
-                (double)usuario.Sede.Lat.Value,
-                (double)usuario.Sede.Lon.Value
-            );
-            var maxRadioMetros = _config.GetValue<int?>("Marcacion:MaxDistanceMeters") ?? 50;
-            if (dist > maxRadioMetros)
-                return BadRequest($"Fuera de geocerca: distancia {dist:F1} m > radio {maxRadioMetros} m.");
-        }
-        else if (usuario.Sede is not null && (!usuario.Sede.Lat.HasValue || !usuario.Sede.Lon.HasValue))
-        {
-            // Opcional: return BadRequest("La sede asignada no tiene coordenadas configuradas para geocerca.");
+            double dist = Geo.DistanceMeters((double)marcacionDto.Latitud, (double)marcacionDto.Longitud, (double)usuario.Sede.Lat.Value, (double)usuario.Sede.Lon.Value);
+            int maxRadio = _config.GetValue<int?>("Marcacion:MaxDistanceMeters") ?? 50;
+            if (dist > maxRadio) return BadRequest($"Fuera de geocerca: distancia {dist:F1} m > radio {maxRadio} m.");
         }
 
         var nueva = new Marcacion
         {
             IdUsuario = idUsuario,
-            Tipo = tipo!,
+            Tipo = tipo,
             LatitudMarcacion = marcacionDto.Latitud,
             LongitudMarcacion = marcacionDto.Longitud,
-            FechaHora = ahoraUtc // ✅ guardado en UTC
+            FechaHora = ahoraUtc
         };
 
         _context.Marcaciones.Add(nueva);
         await _context.SaveChangesAsync();
 
-        // --- ✅ CAMBIO AQUÍ: Llenar el DTO con campos UTC y Locales ---
-        var tz = TzBogota(); // Obtener la zona horaria
+        if (tipo == "salida")
+        {
+            await CalcularYGuardarRecargosAsync(nueva);
+        }
 
-        var dto = new MarcacionResponseDto(
+        var tz = TzBogota();
+        var response = new MarcacionResponseDto(
             nueva.Id,
             nueva.IdUsuario,
-
-            // Campos UTC
             nueva.FechaHora,
             nueva.InicioAlmuerzo,
             nueva.FinAlmuerzo,
-
-            // Campos Locales (convertidos)
-            ConvertToBogota(nueva.FechaHora, tz)!.Value, // No puede ser nulo en creación
+            ConvertToBogota(nueva.FechaHora, tz)!.Value,
             ConvertToBogota(nueva.InicioAlmuerzo, tz),
             ConvertToBogota(nueva.FinAlmuerzo, tz),
-
-            // Resto de campos
             nueva.Tipo,
             nueva.LatitudMarcacion,
             nueva.LongitudMarcacion,
             nueva.TiempoAlmuerzoMinutos
         );
-        // --- FIN DEL CAMBIO ---
 
-        return CreatedAtAction(nameof(ObtenerMarcacionPorId), new { id = nueva.Id }, dto);
+        return CreatedAtAction(nameof(ObtenerMarcacionPorId), new { id = nueva.Id }, response);
     }
 
-    // ===========================================
-    // 2) Mis marcaciones (historial y "última marca") - VERSIÓN CORREGIDA
-    // ===========================================
-    [Authorize]
+    // ========================================
+    // ✅ ENDPOINT PARA APP MÓVIL: MIS MARCACIONES
+    // ========================================
+
+    /// <summary>
+    /// Obtiene las marcaciones del usuario autenticado (para app móvil)
+    /// GET /api/marcaciones/mis
+    /// </summary>
     [HttpGet("mis")]
-    public async Task<ActionResult<object>> GetMisMarcaciones(
-        [FromQuery] DateTimeOffset? desde,
-        [FromQuery] DateTimeOffset? hasta,
+    public async Task<IActionResult> GetMisMarcaciones(
+        [FromQuery] DateTimeOffset? desde = null,
+        [FromQuery] DateTimeOffset? hasta = null,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 50,
-        [FromQuery] bool desc = true)
+        [FromQuery] int pageSize = 20)
     {
         var userId = TryGetUserId(User);
-        if (userId is null) return Unauthorized();
+        if (userId == null) return Unauthorized();
 
-        var tz = TzBogota();
-        // ⬇️ "hoy" en Bogotá → a UTC (Lógica de filtrado no cambia)
-        var nowUtc = DateTimeOffset.UtcNow;
-        var nowBog = TimeZoneInfo.ConvertTime(nowUtc, tz);
-        var startBog = new DateTimeOffset(nowBog.Date, tz.GetUtcOffset(nowBog));
-        var endBog = startBog.AddDays(1);
+        try
+        {
+            var tz = TzBogota();
+            var query = _context.Marcaciones
+                .AsNoTracking()
+                .Where(m => m.IdUsuario == userId.Value);
 
-        var desdeUtc = (desde ?? startBog).ToUniversalTime();
-        var hastaUtc = (hasta ?? endBog).ToUniversalTime();
+            // Filtros de fecha
+            if (desde.HasValue)
+            {
+                query = query.Where(m => m.FechaHora >= desde.Value);
+            }
+            if (hasta.HasValue)
+            {
+                query = query.Where(m => m.FechaHora <= hasta.Value);
+            }
 
-        var q = _context.Marcaciones.AsNoTracking()
-            .Where(m => m.IdUsuario == userId.Value &&
-                        m.FechaHora >= desdeUtc && m.FechaHora < hastaUtc);
+            var total = await query.CountAsync();
 
-        q = desc ? q.OrderByDescending(m => m.FechaHora) : q.OrderBy(m => m.FechaHora);
+            // Primero obtenemos los datos de la BD
+            var marcacionesDb = await query
+                .OrderByDescending(m => m.FechaHora)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
 
-        var total = await q.CountAsync();
+            // Luego convertimos en memoria (no en la consulta SQL)
+            var marcaciones = marcacionesDb.Select(m => new
+            {
+                m.Id,
+                m.IdUsuario,
+                tipo = m.Tipo,
+                fechaHoraUtc = m.FechaHora,
+                fechaHoraLocal = TimeZoneInfo.ConvertTime(m.FechaHora, tz),
+                latitud = m.LatitudMarcacion,
+                longitud = m.LongitudMarcacion,
+                inicioAlmuerzoUtc = m.InicioAlmuerzo,
+                inicioAlmuerzoLocal = m.InicioAlmuerzo.HasValue 
+                    ? TimeZoneInfo.ConvertTime(m.InicioAlmuerzo.Value, tz) 
+                    : (DateTimeOffset?)null,
+                finAlmuerzoUtc = m.FinAlmuerzo,
+                finAlmuerzoLocal = m.FinAlmuerzo.HasValue 
+                    ? TimeZoneInfo.ConvertTime(m.FinAlmuerzo.Value, tz) 
+                    : (DateTimeOffset?)null,
+                m.TiempoAlmuerzoMinutos
+            }).ToList();
 
-        // --- ✅ CAMBIO AQUÍ: Modificar el .Select para incluir campos Locales ---
-        var items = await q.Skip((page - 1) * pageSize)
-                           .Take(pageSize)
-                           .Select(m => new
-                           {
-                               id = m.Id,
-                               tipo = m.Tipo.ToLower(),
-                               latitud = (double?)m.LatitudMarcacion,
-                               longitud = (double?)m.LongitudMarcacion,
-                               tiempoAlmuerzoMinutos = m.TiempoAlmuerzoMinutos,
-
-                               // Campos UTC (originales)
-                               fechaHora = m.FechaHora,
-                               inicioAlmuerzo = m.InicioAlmuerzo,
-                               finAlmuerzo = m.FinAlmuerzo,
-
-                               // --- NUEVOS CAMPOS LOCALES (convertidos) ---
-                               fechaHoraLocal = TimeZoneInfo.ConvertTime(m.FechaHora, tz),
-                               inicioAlmuerzoLocal = m.InicioAlmuerzo.HasValue ? TimeZoneInfo.ConvertTime(m.InicioAlmuerzo.Value, tz) : (DateTimeOffset?)null,
-                               finAlmuerzoLocal = m.FinAlmuerzo.HasValue ? TimeZoneInfo.ConvertTime(m.FinAlmuerzo.Value, tz) : (DateTimeOffset?)null
-                           })
-                           .ToListAsync();
-        // --- FIN DEL CAMBIO ---
-
-        return Ok(new { total, items });
+            return Ok(new { items = marcaciones, total });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error obteniendo marcaciones del usuario {UserId}", userId);
+            return StatusCode(500, new { mensaje = "Error al obtener marcaciones" });
+        }
     }
 
-    // ========================================================
-    // 3) ENDPOINTS DE ALMUERZO (Empleado) - VERSIÓN CORREGIDA
-    // ========================================================
+    /// <summary>
+    /// Obtiene la última marcación del día del usuario autenticado
+    /// GET /api/marcaciones/ultima
+    /// </summary>
+    [HttpGet("ultima")]
+    public async Task<IActionResult> GetUltimaMarcacion()
+    {
+        var userId = TryGetUserId(User);
+        if (userId == null) return Unauthorized();
+
+        try
+        {
+            var tz = TzBogota();
+            var (utcStart, utcEnd) = GetBogotaUtcWindowToday();
+
+            var ultima = await _context.Marcaciones
+                .AsNoTracking()
+                .Where(m => m.IdUsuario == userId.Value && m.FechaHora >= utcStart && m.FechaHora < utcEnd)
+                .OrderByDescending(m => m.FechaHora)
+                .FirstOrDefaultAsync();
+
+            if (ultima == null)
+            {
+                return Ok(new { hayMarcacion = false, mensaje = "No hay marcaciones hoy" });
+            }
+
+            return Ok(new
+            {
+                hayMarcacion = true,
+                id = ultima.Id,
+                tipo = ultima.Tipo,
+                fechaHoraUtc = ultima.FechaHora,
+                fechaHoraLocal = TimeZoneInfo.ConvertTime(ultima.FechaHora, tz),
+                latitud = ultima.LatitudMarcacion,
+                longitud = ultima.LongitudMarcacion
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error obteniendo última marcación");
+            return StatusCode(500, new { mensaje = "Error al obtener última marcación" });
+        }
+    }
+
+    /// <summary>
+    /// Obtiene el estado actual de marcación del usuario (para mostrar botón correcto)
+    /// GET /api/marcaciones/estado
+    /// </summary>
+    [HttpGet("estado")]
+    public async Task<IActionResult> GetEstadoMarcacion()
+    {
+        var userId = TryGetUserId(User);
+        if (userId == null) return Unauthorized();
+
+        try
+        {
+            var tz = TzBogota();
+            var (utcStart, utcEnd) = GetBogotaUtcWindowToday();
+
+            var marcacionesHoy = await _context.Marcaciones
+                .AsNoTracking()
+                .Where(m => m.IdUsuario == userId.Value && m.FechaHora >= utcStart && m.FechaHora < utcEnd)
+                .OrderByDescending(m => m.FechaHora)
+                .ToListAsync();
+
+            var ultima = marcacionesHoy.FirstOrDefault();
+            var entrada = marcacionesHoy.FirstOrDefault(m => m.Tipo == "entrada");
+            var salida = marcacionesHoy.FirstOrDefault(m => m.Tipo == "salida");
+
+            string estado;
+            string siguienteAccion;
+
+            if (entrada == null)
+            {
+                estado = "sin_entrada";
+                siguienteAccion = "entrada";
+            }
+            else if (salida == null)
+            {
+                estado = "entrada_registrada";
+                siguienteAccion = "salida";
+            }
+            else
+            {
+                estado = "jornada_completa";
+                siguienteAccion = "ninguna";
+            }
+
+            return Ok(new
+            {
+                estado,
+                siguienteAccion,
+                ultimaMarcacion = ultima != null ? new
+                {
+                    tipo = ultima.Tipo,
+                    fechaHoraLocal = TimeZoneInfo.ConvertTime(ultima.FechaHora, tz)
+                } : null,
+                entrada = entrada != null ? new
+                {
+                    fechaHoraLocal = TimeZoneInfo.ConvertTime(entrada.FechaHora, tz)
+                } : null,
+                salida = salida != null ? new
+                {
+                    fechaHoraLocal = TimeZoneInfo.ConvertTime(salida.FechaHora, tz)
+                } : null
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error obteniendo estado de marcación");
+            return StatusCode(500, new { mensaje = "Error al obtener estado" });
+        }
+    }
+
+    // ========================================
+    // MÉTODO AUXILIAR PARA CALCULAR RECARGOS
+    // ========================================
+
+    private async Task CalcularYGuardarRecargosAsync(Marcacion marcacionSalida)
+    {
+        try
+        {
+            var fecha = DateOnly.FromDateTime(marcacionSalida.FechaHora.Date);
+            var recargos = await _recargosService.CalcularRecargosDia(marcacionSalida.IdUsuario, fecha);
+
+            var marcacionesDelDia = await _context.Marcaciones
+                .Where(m => m.IdUsuario == marcacionSalida.IdUsuario && m.FechaHora.Date == marcacionSalida.FechaHora.Date)
+                .ToListAsync();
+
+            var entrada = marcacionesDelDia.FirstOrDefault(m => m.Tipo == "entrada");
+
+            if (entrada != null)
+            {
+                entrada.HorasExtraDiurnas = recargos.HorasExtraDiurnas;
+                entrada.HorasExtraNocturnas = recargos.HorasExtraNocturnas;
+                entrada.HorasRecargoNocturnoOrdinario = recargos.HorasRecargoNocturnoOrdinario;
+                entrada.RecargosCalculados = true;
+            }
+
+            marcacionSalida.HorasExtraDiurnas = recargos.HorasExtraDiurnas;
+            marcacionSalida.HorasExtraNocturnas = recargos.HorasExtraNocturnas;
+            marcacionSalida.HorasRecargoNocturnoOrdinario = recargos.HorasRecargoNocturnoOrdinario;
+            marcacionSalida.RecargosCalculados = true;
+
+            await _context.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error calculando recargos para marcación {Id}", marcacionSalida.Id);
+        }
+    }
+
+    // ========================================
+    // ALMUERZO
+    // ========================================
 
     [HttpPost("almuerzo/inicio")]
     public async Task<IActionResult> IniciarAlmuerzo([FromBody] AlmuerzoDto dto)
     {
-        // ... (Tu lógica de validación, geocerca y guardado no cambia) ...
-        var idUsuarioClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (string.IsNullOrWhiteSpace(idUsuarioClaim)) return Unauthorized();
-        var idUsuario = int.Parse(idUsuarioClaim);
-
-        if (dto.Latitud is < -90 or > 90 || dto.Longitud is < -180 or > 180) return BadRequest("Coordenadas inválidas.");
+        var idUserId = TryGetUserId(User);
+        if (idUserId == null) return Unauthorized();
 
         var ahoraUtc = DateTimeOffset.UtcNow;
         var (utcStart, utcEnd) = GetBogotaUtcWindowToday();
 
         var entradaHoy = await _context.Marcaciones
-            .Where(m => m.IdUsuario == idUsuario && m.Tipo == "entrada"
-                     && m.FechaHora >= utcStart && m.FechaHora < utcEnd)
+            .Where(m => m.IdUsuario == idUserId && m.Tipo == "entrada" && m.FechaHora >= utcStart && m.FechaHora < utcEnd)
             .OrderByDescending(m => m.FechaHora)
             .FirstOrDefaultAsync();
 
-        if (entradaHoy is null) return BadRequest("Debes marcar entrada primero antes de iniciar el almuerzo.");
-        if (entradaHoy.InicioAlmuerzo.HasValue && !entradaHoy.FinAlmuerzo.HasValue)
-            return BadRequest("Ya tienes un almuerzo en curso.");
-        if (entradaHoy.InicioAlmuerzo.HasValue && entradaHoy.FinAlmuerzo.HasValue)
-            return BadRequest("Ya registraste un almuerzo completo hoy.");
-
-        var usuario = await _context.Usuarios
-            .AsNoTracking()
-            .Include(u => u.Sede)
-            .FirstOrDefaultAsync(u => u.Id == idUsuario && u.Activo);
-
-        if (usuario?.Sede?.Lat.HasValue == true && usuario.Sede.Lon.HasValue)
-        {
-            var dist = Geo.DistanceMeters(
-                (double)dto.Latitud, (double)dto.Longitud,
-                (double)usuario.Sede.Lat.Value, (double)usuario.Sede.Lon.Value
-            );
-            var maxRadioMetros = _config.GetValue<int?>("Marcacion:MaxDistanceMeters") ?? 200;
-            if (dist > maxRadioMetros)
-                return BadRequest($"Fuera de geocerca: distancia {dist:F1} m > radio {maxRadioMetros} m.");
-        }
+        if (entradaHoy == null) return BadRequest("Debes marcar entrada primero.");
 
         entradaHoy.InicioAlmuerzo = ahoraUtc;
         await _context.SaveChangesAsync();
 
-        // --- ✅ CAMBIO AQUÍ: Devolver el campo Local ---
         var tz = TzBogota();
         return Ok(new
         {
-            Message = "Inicio de almuerzo registrado correctamente.",
-            InicioAlmuerzo = entradaHoy.InicioAlmuerzo.Value.ToUniversalTime(), // UTC
-            InicioAlmuerzoLocal = ConvertToBogota(entradaHoy.InicioAlmuerzo, tz) // LOCAL
+            Message = "Inicio de almuerzo registrado.",
+            InicioAlmuerzoLocal = ConvertToBogota(entradaHoy.InicioAlmuerzo, tz)
         });
-        // --- FIN DEL CAMBIO ---
     }
 
     [HttpPost("almuerzo/fin")]
     public async Task<IActionResult> FinalizarAlmuerzo([FromBody] AlmuerzoDto dto)
     {
-        // ... (Tu lógica de validación, geocerca y guardado no cambia) ...
-        var idUsuarioClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (string.IsNullOrWhiteSpace(idUsuarioClaim)) return Unauthorized();
-        var idUsuario = int.Parse(idUsuarioClaim);
-
-        if (dto.Latitud is < -90 or > 90 || dto.Longitud is < -180 or > 180) return BadRequest("Coordenadas inválidas.");
+        var idUserId = TryGetUserId(User);
+        if (idUserId == null) return Unauthorized();
 
         var ahoraUtc = DateTimeOffset.UtcNow;
         var (utcStart, utcEnd) = GetBogotaUtcWindowToday();
 
         var entradaHoy = await _context.Marcaciones
-            .Where(m => m.IdUsuario == idUsuario && m.Tipo == "entrada"
-                     && m.FechaHora >= utcStart && m.FechaHora < utcEnd)
+            .Where(m => m.IdUsuario == idUserId && m.Tipo == "entrada" && m.FechaHora >= utcStart && m.FechaHora < utcEnd)
             .OrderByDescending(m => m.FechaHora)
             .FirstOrDefaultAsync();
 
-        if (entradaHoy is null) return BadRequest("No se encontró una marcación de entrada hoy.");
-        if (!entradaHoy.InicioAlmuerzo.HasValue) return BadRequest("No has iniciado el almuerzo.");
-        if (entradaHoy.FinAlmuerzo.HasValue) return BadRequest("Ya finalizaste el almuerzo hoy.");
-
-        var usuario = await _context.Usuarios
-            .AsNoTracking()
-            .Include(u => u.Sede)
-            .FirstOrDefaultAsync(u => u.Id == idUsuario && u.Activo);
-
-        if (usuario?.Sede?.Lat.HasValue == true && usuario.Sede.Lon.HasValue)
-        {
-            var dist = Geo.DistanceMeters(
-                (double)dto.Latitud, (double)dto.Longitud,
-                (double)usuario.Sede.Lat.Value, (double)usuario.Sede.Lon.Value
-            );
-            var maxRadioMetros = _config.GetValue<int?>("Marcacion:MaxDistanceMeters") ?? 200;
-            if (dist > maxRadioMetros)
-                return BadRequest($"Fuera de geocerca: distancia {dist:F1} m > radio {maxRadioMetros} m.");
-        }
+        if (entradaHoy == null || !entradaHoy.InicioAlmuerzo.HasValue) return BadRequest("No has iniciado el almuerzo.");
 
         entradaHoy.FinAlmuerzo = ahoraUtc;
-        entradaHoy.TiempoAlmuerzoMinutos =
-            (int)Math.Round((entradaHoy.FinAlmuerzo.Value - entradaHoy.InicioAlmuerzo.Value).TotalMinutes);
-
+        entradaHoy.TiempoAlmuerzoMinutos = (int)(entradaHoy.FinAlmuerzo.Value - entradaHoy.InicioAlmuerzo.Value).TotalMinutes;
         await _context.SaveChangesAsync();
 
-        // --- ✅ CAMBIO AQUÍ: Devolver el campo Local ---
         var tz = TzBogota();
         return Ok(new
         {
-            Message = "Fin de almuerzo registrado correctamente.",
-            FinAlmuerzo = entradaHoy.FinAlmuerzo.Value.ToUniversalTime(), // UTC
-            FinAlmuerzoLocal = ConvertToBogota(entradaHoy.FinAlmuerzo, tz), // LOCAL
+            Message = "Almuerzo finalizado.",
             TiempoAlmuerzoMinutos = entradaHoy.TiempoAlmuerzoMinutos
         });
-        // --- FIN DEL CAMBIO ---
     }
 
+    /// <summary>
+    /// Obtiene el estado actual del almuerzo
+    /// GET /api/marcaciones/almuerzo/estado
+    /// </summary>
     [HttpGet("almuerzo/estado")]
-    public async Task<IActionResult> ObtenerEstadoAlmuerzo()
+    public async Task<IActionResult> GetEstadoAlmuerzo()
     {
-        var idUsuarioClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (string.IsNullOrWhiteSpace(idUsuarioClaim)) return Unauthorized();
-        var idUsuario = int.Parse(idUsuarioClaim);
+        var userId = TryGetUserId(User);
+        if (userId == null) return Unauthorized();
 
-        // --- ✅ CAMBIO AQUÍ: Añadir TzBogota ---
-        var tz = TzBogota();
-        // --- FIN DEL CAMBIO ---
-        var (utcStart, utcEnd) = GetBogotaUtcWindowToday();
+        try
+        {
+            var tz = TzBogota();
+            var (utcStart, utcEnd) = GetBogotaUtcWindowToday();
 
-        var entradaHoy = await _context.Marcaciones.AsNoTracking()
-            .Where(m => m.IdUsuario == idUsuario && m.Tipo == "entrada"
-                     && m.FechaHora >= utcStart && m.FechaHora < utcEnd)
-            .OrderByDescending(m => m.FechaHora)
-            .FirstOrDefaultAsync();
+            var entradaHoy = await _context.Marcaciones
+                .AsNoTracking()
+                .Where(m => m.IdUsuario == userId && m.Tipo == "entrada" && m.FechaHora >= utcStart && m.FechaHora < utcEnd)
+                .OrderByDescending(m => m.FechaHora)
+                .FirstOrDefaultAsync();
 
-        if (entradaHoy is null)
-            return Ok(new { Estado = "sin_entrada", Message = "No has marcado entrada hoy." });
+            if (entradaHoy == null)
+            {
+                return Ok(new
+                {
+                    estado = "sin_entrada",
+                    message = "No has marcado entrada hoy"
+                });
+            }
 
-        if (!entradaHoy.InicioAlmuerzo.HasValue)
-            return Ok(new { Estado = "sin_almuerzo", Message = "No has iniciado almuerzo." });
+            if (!entradaHoy.InicioAlmuerzo.HasValue)
+            {
+                return Ok(new
+                {
+                    estado = "sin_almuerzo",
+                    message = "No has iniciado el almuerzo"
+                });
+            }
 
-        // --- ✅ CAMBIO AQUÍ: Añadir campo Local ---
-        if (!entradaHoy.FinAlmuerzo.HasValue)
+            if (!entradaHoy.FinAlmuerzo.HasValue)
+            {
+                return Ok(new
+                {
+                    estado = "almuerzo_en_curso",
+                    message = "Almuerzo en curso",
+                    inicioAlmuerzoUtc = entradaHoy.InicioAlmuerzo,
+                    inicioAlmuerzoLocal = ConvertToBogota(entradaHoy.InicioAlmuerzo, tz)
+                });
+            }
+
             return Ok(new
             {
-                Estado = "almuerzo_en_curso",
-                Message = "Almuerzo en curso.",
-                InicioAlmuerzo = entradaHoy.InicioAlmuerzo.Value.ToUniversalTime(), // UTC
-                InicioAlmuerzoLocal = ConvertToBogota(entradaHoy.InicioAlmuerzo, tz) // LOCAL
+                estado = "almuerzo_completado",
+                message = "Almuerzo completado",
+                inicioAlmuerzoUtc = entradaHoy.InicioAlmuerzo,
+                inicioAlmuerzoLocal = ConvertToBogota(entradaHoy.InicioAlmuerzo, tz),
+                finAlmuerzoUtc = entradaHoy.FinAlmuerzo,
+                finAlmuerzoLocal = ConvertToBogota(entradaHoy.FinAlmuerzo, tz),
+                tiempoAlmuerzoMinutos = entradaHoy.TiempoAlmuerzoMinutos
             });
-        // --- FIN DEL CAMBIO ---
-
-        // --- ✅ CAMBIO AQUÍ: Añadir campos Locales ---
-        return Ok(new
+        }
+        catch (Exception ex)
         {
-            Estado = "almuerzo_completado",
-            Message = "Almuerzo completado.",
-            TiempoAlmuerzoMinutos = entradaHoy.TiempoAlmuerzoMinutos,
-            // UTC
-            InicioAlmuerzo = entradaHoy.InicioAlmuerzo.Value.ToUniversalTime(),
-            FinAlmuerzo = entradaHoy.FinAlmuerzo.Value.ToUniversalTime(),
-            // LOCAL
-            InicioAlmuerzoLocal = ConvertToBogota(entradaHoy.InicioAlmuerzo, tz),
-            FinAlmuerzoLocal = ConvertToBogota(entradaHoy.FinAlmuerzo, tz)
-        });
-        // --- FIN DEL CAMBIO ---
+            _logger.LogError(ex, "Error obteniendo estado de almuerzo");
+            return StatusCode(500, new { mensaje = "Error al obtener estado de almuerzo" });
+        }
     }
 
-    // ===========================================
-    // 4) ENDPOINTS DE ADMIN - (ACTUALIZADOS)
-    // ===========================================
+    // ========================================
+    // CONSULTAS Y EXCEL (ADMIN)
+    // ========================================
 
     [HttpGet("{id:int}")]
-    [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
+    [Authorize(Roles = "admin,superadmin")]
     public async Task<IActionResult> ObtenerMarcacionPorId(int id)
     {
-        var m = await _context.Marcaciones
-            .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Id == id);
+        var m = await _context.Marcaciones.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
+        if (m == null) return NotFound();
 
-        if (m is null) return NotFound();
-
-        if (!User.IsSuperAdmin())
-        {
-            var sedeIdAdmin = User.GetSedeId() ?? 0;
-            var usuarioDeMarcacion = await _context.Usuarios.AsNoTracking()
-                                                .Where(u => u.Id == m.IdUsuario)
-                                                .Select(u => u.IdSede)
-                                                .FirstOrDefaultAsync();
-            if (usuarioDeMarcacion == 0 || usuarioDeMarcacion != sedeIdAdmin)
-            {
-                return Forbid("No puedes ver marcaciones de usuarios de otra sede.");
-            }
-        }
-
-        // --- ✅ CAMBIO AQUÍ: Llenar el DTO con campos UTC y Locales ---
         var tz = TzBogota();
-        var dto = new MarcacionResponseDto(
-            m.Id,
-            m.IdUsuario,
-            // UTC
-            m.FechaHora,
-            m.InicioAlmuerzo,
-            m.FinAlmuerzo,
-            // Local
-            ConvertToBogota(m.FechaHora, tz)!.Value,
-            ConvertToBogota(m.InicioAlmuerzo, tz),
-            ConvertToBogota(m.FinAlmuerzo, tz),
-            // Resto
-            m.Tipo,
-            m.LatitudMarcacion,
-            m.LongitudMarcacion,
-            m.TiempoAlmuerzoMinutos
-        );
-        // --- FIN DEL CAMBIO ---
-
-        return Ok(dto);
+        return Ok(new MarcacionResponseDto(
+            m.Id, m.IdUsuario, m.FechaHora, m.InicioAlmuerzo, m.FinAlmuerzo,
+            ConvertToBogota(m.FechaHora, tz)!.Value, ConvertToBogota(m.InicioAlmuerzo, tz),
+            ConvertToBogota(m.FinAlmuerzo, tz), m.Tipo, m.LatitudMarcacion,
+            m.LongitudMarcacion, m.TiempoAlmuerzoMinutos
+        ));
     }
 
-    [HttpGet]
-    [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
-    public async Task<IActionResult> Listar(
-       [FromQuery] int? idSede,
-       [FromQuery] int? idUsuario,
-       [FromQuery] string? numeroDocumento,
-       [FromQuery] DateTimeOffset? desde,
-       [FromQuery] DateTimeOffset? hasta,
-       [FromQuery] string? tipo,
-       [FromQuery] int page = Paging.DefaultPage,
-       [FromQuery] int pageSize = Paging.DefaultPageSize)
-    {
-        (page, pageSize) = Paging.Normalize(page, pageSize);
-        var tz = TzBogota();
-
-        // 1. Iniciamos la query incluyendo al Usuario para poder filtrar y mostrar nombre
-        var query = _context.Marcaciones.AsNoTracking()
-                            .Include(m => m.Usuario)
-                                .ThenInclude(u => u.Sede) // ✅ Incluir la Sede del Usuario
-                            .AsQueryable();
-
-        var sedeIdFiltrada = idSede;
-        if (!User.IsSuperAdmin())
-        {
-            sedeIdFiltrada = User.GetSedeId() ?? 0;
-        }
-
-        // Filtro por ID (existente)
-        if (idUsuario.HasValue && idUsuario.Value > 0)
-            query = query.Where(m => m.IdUsuario == idUsuario.Value);
-
-        // 2. NUEVO: Filtro por Número de Documento
-        if (!string.IsNullOrWhiteSpace(numeroDocumento))
-        {
-            var docTrim = numeroDocumento.Trim();
-            query = query.Where(m => m.Usuario.NumeroDocumento == docTrim);
-        }
-
-        if (!string.IsNullOrWhiteSpace(tipo))
-        {
-            var t = tipo.Trim().ToLowerInvariant();
-            if (t is "entrada" or "salida")
-                query = query.Where(m => m.Tipo == t);
-        }
-
-        if (desde.HasValue) query = query.Where(m => m.FechaHora >= desde.Value);
-        if (hasta.HasValue) query = query.Where(m => m.FechaHora <= hasta.Value);
-
-        if (sedeIdFiltrada.HasValue && sedeIdFiltrada.Value > 0)
-        {
-            // Nota: Al usar Include(m => m.Usuario), ya podemos filtrar por m.Usuario.IdSede
-            query = query.Where(m => m.Usuario.IdSede == sedeIdFiltrada.Value);
-        }
-
-        var total = await query.CountAsync();
-
-        var items = await query
-            .OrderByDescending(m => m.FechaHora)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(m => new
-            {
-                m.Id,
-                m.IdUsuario,
-
-                // 3. CAMPOS PARA EL FRONTEND
-                NombreUsuario = m.Usuario.NombreCompleto,
-                DocumentoUsuario = m.Usuario.NumeroDocumento,
-
-                // ✅ NUEVO: Nombre de la Sede
-                NombreSede = m.Usuario.Sede != null ? m.Usuario.Sede.Nombre : "Sin sede",
-
-                m.Tipo,
-                Latitud = m.LatitudMarcacion,
-                Longitud = m.LongitudMarcacion,
-                m.TiempoAlmuerzoMinutos,
-
-                // UTC
-                m.FechaHora,
-                m.InicioAlmuerzo,
-                m.FinAlmuerzo,
-
-                // Locales
-                fechaHoraLocal = TimeZoneInfo.ConvertTime(m.FechaHora, tz),
-                inicioAlmuerzoLocal = m.InicioAlmuerzo.HasValue ? TimeZoneInfo.ConvertTime(m.InicioAlmuerzo.Value, tz) : (DateTimeOffset?)null,
-                finAlmuerzoLocal = m.FinAlmuerzo.HasValue ? TimeZoneInfo.ConvertTime(m.FinAlmuerzo.Value, tz) : (DateTimeOffset?)null
-            })
-            .ToListAsync();
-
-        return Ok(new PagedResponse<object>(items, total, page, pageSize));
-    }
-
-    // ===========================================
-    // 5) ✅ EXPORTAR MARCACIONES A EXCEL (SIN LAT/LON)
-    // ===========================================
     [HttpGet("exportar-excel")]
-    [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
-    public async Task<IActionResult> ExportarExcel(
-        [FromQuery] int? idSede,
-        [FromQuery] string? numeroDocumento,
-        [FromQuery] DateTimeOffset? desde,
-        [FromQuery] DateTimeOffset? hasta,
-        [FromQuery] string? tipo)
+    [Authorize(Roles = "admin,superadmin")]
+    public async Task<IActionResult> ExportarExcel([FromQuery] DateOnly? desde, [FromQuery] DateOnly? hasta, [FromQuery] int? idUsuario, [FromQuery] int? idSede)
     {
         try
         {
             var tz = TzBogota();
-
             var query = _context.Marcaciones.AsNoTracking()
-                                .Include(m => m.Usuario)
-                                    .ThenInclude(u => u.Sede)
-                                .AsQueryable();
+                .Include(m => m.Usuario).ThenInclude(u => u.Sede).AsQueryable();
 
-            var sedeIdFiltrada = idSede;
-            if (!User.IsSuperAdmin())
-            {
-                sedeIdFiltrada = User.GetSedeId() ?? 0;
-            }
-
-            if (!string.IsNullOrWhiteSpace(numeroDocumento))
-            {
-                var docTrim = numeroDocumento.Trim();
-                query = query.Where(m => m.Usuario.NumeroDocumento == docTrim);
-            }
-
-            if (!string.IsNullOrWhiteSpace(tipo))
-            {
-                var t = tipo.Trim().ToLowerInvariant();
-                if (t is "entrada" or "salida")
-                    query = query.Where(m => m.Tipo == t);
-            }
-
-            if (desde.HasValue) query = query.Where(m => m.FechaHora >= desde.Value);
-            if (hasta.HasValue) query = query.Where(m => m.FechaHora <= hasta.Value);
-
-            if (sedeIdFiltrada.HasValue && sedeIdFiltrada.Value > 0)
-            {
-                query = query.Where(m => m.Usuario.IdSede == sedeIdFiltrada.Value);
-            }
-
-            var datos = await query
-                .OrderByDescending(m => m.FechaHora)
-                .Select(m => new
-                {
-                    m.Id,
-                    NombreUsuario = m.Usuario.NombreCompleto,
-                    DocumentoUsuario = m.Usuario.NumeroDocumento,
-                    NombreSede = m.Usuario.Sede != null ? m.Usuario.Sede.Nombre : "Sin sede",
-                    m.Tipo,
-                    m.FechaHora
-                })
-                .ToListAsync();
-
-            if (!datos.Any())
-            {
-                return NotFound("No se encontraron registros para exportar");
-            }
+            var list = await query.OrderBy(m => m.FechaHora).ToListAsync();
 
             using var workbook = new XLWorkbook();
             var worksheet = workbook.Worksheets.Add("Marcaciones");
 
-            // ✅ Encabezados SIN Latitud y Longitud
-            worksheet.Cell(1, 1).Value = "ID";
-            worksheet.Cell(1, 2).Value = "Documento";
-            worksheet.Cell(1, 3).Value = "Usuario";
-            worksheet.Cell(1, 4).Value = "Sede";
-            worksheet.Cell(1, 5).Value = "Fecha";
-            worksheet.Cell(1, 6).Value = "Hora";
-            worksheet.Cell(1, 7).Value = "Tipo";
-
-            // Estilo encabezados (ahora son 7 columnas)
-            var headerRange = worksheet.Range(1, 1, 1, 7);
-            headerRange.Style.Font.Bold = true;
-            headerRange.Style.Fill.BackgroundColor = XLColor.FromArgb(79, 129, 189);
-            headerRange.Style.Font.FontColor = XLColor.White;
-            headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-
-            int row = 2;
-            foreach (var m in datos)
-            {
-                var fechaLocal = TimeZoneInfo.ConvertTime(m.FechaHora, tz);
-
-                worksheet.Cell(row, 1).Value = m.Id;
-                worksheet.Cell(row, 2).Value = m.DocumentoUsuario ?? "-";
-                worksheet.Cell(row, 3).Value = m.NombreUsuario ?? "Desconocido";
-                worksheet.Cell(row, 4).Value = m.NombreSede;
-                worksheet.Cell(row, 5).Value = fechaLocal.ToString("dd/MM/yyyy");
-                worksheet.Cell(row, 6).Value = fechaLocal.ToString("HH:mm:ss");
-                worksheet.Cell(row, 7).Value = m.Tipo;
-
-                // Formato condicional para tipo
-                if (m.Tipo == "entrada")
-                {
-                    worksheet.Cell(row, 7).Style.Font.FontColor = XLColor.Green;
-                    worksheet.Cell(row, 7).Style.Font.Bold = true;
-                }
-                else if (m.Tipo == "salida")
-                {
-                    worksheet.Cell(row, 7).Style.Font.FontColor = XLColor.DarkOrange;
-                    worksheet.Cell(row, 7).Style.Font.Bold = true;
-                }
-
-                row++;
-            }
-
-            worksheet.Columns().AdjustToContents();
-
-            // Bordes (ahora son 7 columnas)
-            var dataRange = worksheet.Range(1, 1, row - 1, 7);
-            dataRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
-            dataRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
-
             using var stream = new MemoryStream();
             workbook.SaveAs(stream);
-            stream.Position = 0;
-
-            var fileName = $"Marcaciones_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
-
-            return File(
-                stream.ToArray(),
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                fileName
-            );
+            return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "Marcaciones.xlsx");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error generando Excel de marcaciones: {ex.Message}");
-            return StatusCode(500, $"Error al generar el Excel: {ex.Message}");
+            _logger.LogError(ex, "Error Excel");
+            return StatusCode(500, "Error");
+        }
+    }
+
+    [HttpGet]
+    [Authorize(Roles = "admin,superadmin")]
+    public async Task<IActionResult> ListarMarcaciones(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        [FromQuery] string? NumeroDocumento = null,
+        [FromQuery] int? idSede = null,
+        [FromQuery] string? tipo = null,
+        [FromQuery] DateTimeOffset? desde = null,
+        [FromQuery] DateTimeOffset? hasta = null)
+    {
+        try
+        {
+            var query = _context.Marcaciones
+                .Include(m => m.Usuario).ThenInclude(u => u.Sede)
+                .AsNoTracking().AsQueryable();
+
+            if (!User.IsInRole("superadmin"))
+            {
+                var sedeIdAdmin = User.FindFirstValue("SedeId");
+                if (!string.IsNullOrEmpty(sedeIdAdmin)) query = query.Where(m => m.Usuario.IdSede == int.Parse(sedeIdAdmin));
+            }
+            else if (idSede.HasValue) query = query.Where(m => m.Usuario.IdSede == idSede.Value);
+
+            if (!string.IsNullOrWhiteSpace(NumeroDocumento)) query = query.Where(m => m.Usuario.NumeroDocumento.Contains(NumeroDocumento));
+            if (!string.IsNullOrWhiteSpace(tipo)) query = query.Where(m => m.Tipo == tipo.ToLower());
+            if (desde.HasValue) query = query.Where(m => m.FechaHora >= desde.Value);
+            if (hasta.HasValue) query = query.Where(m => m.FechaHora <= hasta.Value);
+
+            var total = await query.CountAsync();
+            var marcaciones = await query.OrderByDescending(m => m.FechaHora).Skip((page - 1) * pageSize).Take(pageSize)
+                .Select(m => new
+                {
+                    m.Id,
+                    documentoUsuario = m.Usuario.NumeroDocumento,
+                    nombreUsuario = m.Usuario.NombreCompleto,
+                    nombreSede = m.Usuario.Sede.Nombre,
+                    fechaHora = m.FechaHora,
+                    tipo = m.Tipo
+                }).ToListAsync();
+
+            return Ok(new { data = marcaciones, total });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error listado");
+            return StatusCode(500, new { mensaje = "Error" });
         }
     }
 }

@@ -1,14 +1,15 @@
-﻿using MarcacionAPI.Data;
-using MarcacionAPI.DTOs;
 using System;
-using Microsoft.EntityFrameworkCore; // Asegúrate de que este 'using' esté presente
+using System.Collections.Generic;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Threading;
+using System.Threading.Tasks;
+using MarcacionAPI.Data;
+using MarcacionAPI.DTOs;
+using MarcacionAPI.Models;
+using Microsoft.EntityFrameworkCore;
 
 namespace MarcacionAPI.Services;
-
-public interface IAsistenciaService
-{
-    Task<AsistenciaConCompensacionDto> AnalizarAsistenciaDia(int usuarioId, DateTime fecha);
-}
 
 public class AsistenciaService : IAsistenciaService
 {
@@ -21,46 +22,29 @@ public class AsistenciaService : IAsistenciaService
 
     public async Task<AsistenciaConCompensacionDto> AnalizarAsistenciaDia(int usuarioId, DateTime fecha)
     {
-        // --- CORRECCIÓN DE LÓGICA DE FECHAS ---
-        // Convertir la 'fecha' (DateTime) a 'DateOnly' para la consulta
-        var fechaConsulta = DateOnly.FromDateTime(fecha);
-
-        // Obtener usuario con horario
-        var horarioAsignado = await _context.UsuarioHorarios
-            // --- CORRECCIÓN DE CONSULTA (DateOnly y Nullable) ---
-            .Where(uh => uh.IdUsuario == usuarioId &&
-                         uh.Desde <= fechaConsulta &&
-                         (uh.Hasta == null || uh.Hasta >= fechaConsulta)) // <-- 'Hasta' nulo significa indefinido
-            .Include(uh => uh.Horario) // Carga el Horario relacionado
-                .ThenInclude(h => h.Detalles) // Carga los Detalles de ESE Horario
-            .Select(uh => uh.Horario) // Solo nos interesa el objeto Horario
-            .FirstOrDefaultAsync();
-
-        // El 'usuario.Horario' se reemplaza por 'horarioAsignado'
+        DateOnly fechaConsulta = DateOnly.FromDateTime(fecha);
+        Horario horarioAsignado = await EntityFrameworkQueryableExtensions.FirstOrDefaultAsync<Horario>(((IQueryable<UsuarioHorario>)EntityFrameworkQueryableExtensions.ThenInclude<UsuarioHorario, Horario, ICollection<HorarioDetalle>>(EntityFrameworkQueryableExtensions.Include<UsuarioHorario, Horario>(((IQueryable<UsuarioHorario>)_context.UsuarioHorarios).Where((UsuarioHorario uh) => uh.IdUsuario == usuarioId && uh.Desde <= fechaConsulta && (uh.Hasta == null || uh.Hasta >= fechaConsulta)), (Expression<Func<UsuarioHorario, Horario>>)((UsuarioHorario uh) => uh.Horario)), (Expression<Func<Horario, ICollection<HorarioDetalle>>>)((Horario h) => h.Detalles))).Select((UsuarioHorario uh) => uh.Horario), default(CancellationToken));
         if (horarioAsignado == null)
+        {
             throw new Exception("Usuario sin horario asignado para la fecha seleccionada");
-
-        // Obtener configuración del día
+        }
         int diaSemana = (int)fecha.DayOfWeek;
-        if (diaSemana == 0) diaSemana = 7; // Convertir Domingo (0) a 7
-
-        var detalle = horarioAsignado.Detalles
-            .FirstOrDefault(d => d.DiaSemana == diaSemana);
-
+        if (diaSemana == 0)
+        {
+            diaSemana = 7;
+        }
+        HorarioDetalle detalle = horarioAsignado.Detalles.FirstOrDefault((HorarioDetalle d) => d.DiaSemana == diaSemana);
         if (detalle == null || !detalle.Laborable)
+        {
             throw new Exception("Día no laborable");
-
-        // Obtener marcaciones del día
-        var marcaciones = await _context.Marcaciones
-            .Where(m => m.IdUsuario == usuarioId && m.FechaHora.Date == fecha.Date)
-            .OrderBy(m => m.FechaHora)
-            .ToListAsync();
-
-        var entrada = marcaciones.FirstOrDefault(m => m.Tipo == "Entrada");
-        var salida = marcaciones.FirstOrDefault(m => m.Tipo == "Salida");
-
-        // Si no hay marcaciones completas, no se puede analizar
-        if (entrada == null || salida == null)
+        }
+        List<Marcacion> source = await EntityFrameworkQueryableExtensions.ToListAsync<Marcacion>((IQueryable<Marcacion>)(from m in (IQueryable<Marcacion>)_context.Marcaciones
+                                                                                                                         where m.IdUsuario == usuarioId && m.FechaHora.Date == ((DateTime)fecha).Date
+                                                                                                                         orderby m.FechaHora
+                                                                                                                         select m), default(CancellationToken));
+        Marcacion marcacion = source.FirstOrDefault((Marcacion m) => m.Tipo == "Entrada");
+        Marcacion marcacion2 = source.FirstOrDefault((Marcacion m) => m.Tipo == "Salida");
+        if (marcacion == null || marcacion2 == null)
         {
             return new AsistenciaConCompensacionDto
             {
@@ -70,56 +54,35 @@ public class AsistenciaService : IAsistenciaService
                 Mensaje = "Faltan marcaciones de entrada o salida"
             };
         }
-
-        // Calcular horas
-        var horaEntradaEsperada = detalle.HoraEntrada ?? TimeSpan.Zero;
-        var horaSalidaEsperada = detalle.HoraSalida ?? TimeSpan.Zero;
-        var tolerancia = detalle.ToleranciaMin ?? 0;
-        var horaLimiteEntrada = horaEntradaEsperada.Add(TimeSpan.FromMinutes(tolerancia));
-
-        var horasTrabajadas = salida.FechaHora - entrada.FechaHora;
-        var horasEsperadas = horaSalidaEsperada - horaEntradaEsperada;
-
-        // Calcular tardanza bruta
-        var minutosTarde = entrada.FechaHora.TimeOfDay > horaLimiteEntrada
-            ? entrada.FechaHora.TimeOfDay - horaLimiteEntrada
-            : TimeSpan.Zero;
-
-        // Calcular tiempo extra bruto
-        var minutosExtra = salida.FechaHora.TimeOfDay > horaSalidaEsperada
-            ? salida.FechaHora.TimeOfDay - horaSalidaEsperada
-            : TimeSpan.Zero;
-
-        // LÓGICA DE COMPENSACIÓN
-        bool permiteCompensacion = detalle.PermitirCompensacion
-            ?? horarioAsignado.PermitirCompensacion;
-
+        TimeSpan timeSpan = detalle.HoraEntrada ?? TimeSpan.Zero;
+        TimeSpan timeSpan2 = detalle.HoraSalida ?? TimeSpan.Zero;
+        int valueOrDefault = detalle.ToleranciaMin.GetValueOrDefault();
+        TimeSpan timeSpan3 = timeSpan.Add(TimeSpan.FromMinutes(valueOrDefault));
+        TimeSpan timeSpan4 = marcacion2.FechaHora - marcacion.FechaHora;
+        TimeSpan timeSpan5 = timeSpan2 - timeSpan;
+        TimeSpan timeSpan6 = ((marcacion.FechaHora.TimeOfDay > timeSpan3) ? (marcacion.FechaHora.TimeOfDay - timeSpan3) : TimeSpan.Zero);
+        TimeSpan timeSpan7 = ((marcacion2.FechaHora.TimeOfDay > timeSpan2) ? (marcacion2.FechaHora.TimeOfDay - timeSpan2) : TimeSpan.Zero);
+        bool flag = detalle.PermitirCompensacion ?? horarioAsignado.PermitirCompensacion;
         bool tardanzaCompensada = false;
-        var tardanzaNeta = minutosTarde;
-        var tiempoExtraNeto = minutosExtra;
-        string estado = "PUNTUAL";
-        string mensaje = "";
-
-        if (permiteCompensacion && minutosTarde > TimeSpan.Zero)
+        TimeSpan tardanzaNeta = timeSpan6;
+        TimeSpan tiempoExtraNeto = timeSpan7;
+        string estado;
+        string mensaje;
+        if (flag && timeSpan6 > TimeSpan.Zero)
         {
-            // Si trabajó las horas completas o más, se compensa la tardanza
-            if (horasTrabajadas >= horasEsperadas)
+            if (timeSpan4 >= timeSpan5)
             {
                 tardanzaCompensada = true;
-
-                // Calcular compensación
-                if (minutosExtra >= minutosTarde)
+                if (timeSpan7 >= timeSpan6)
                 {
-                    // Tiene suficiente extra para compensar toda la tardanza
-                    tiempoExtraNeto = minutosExtra - minutosTarde;
+                    tiempoExtraNeto = timeSpan7 - timeSpan6;
                     tardanzaNeta = TimeSpan.Zero;
                     estado = "COMPENSADO";
-                    mensaje = $"Tardanza de {minutosTarde.TotalMinutes:F0} min compensada con tiempo extra";
+                    mensaje = $"Tardanza de {timeSpan6.TotalMinutes:F0} min compensada con tiempo extra";
                 }
                 else
                 {
-                    // Compensó parcialmente
-                    tardanzaNeta = minutosTarde - minutosExtra;
+                    tardanzaNeta = timeSpan6 - timeSpan7;
                     tiempoExtraNeto = TimeSpan.Zero;
                     estado = "PARCIALMENTE_COMPENSADO";
                     mensaje = $"Tardanza parcialmente compensada. Quedan {tardanzaNeta.TotalMinutes:F0} min";
@@ -127,45 +90,37 @@ public class AsistenciaService : IAsistenciaService
             }
             else
             {
-                // No trabajó las horas completas, no se compensa
                 estado = "TARDE_SIN_COMPENSAR";
-                mensaje = $"Tardanza de {minutosTarde.TotalMinutes:F0} min. No cumplió horario completo.";
+                mensaje = $"Tardanza de {timeSpan6.TotalMinutes:F0} min. No cumplió horario completo.";
             }
         }
-        else if (minutosTarde > TimeSpan.Zero)
+        else if (timeSpan6 > TimeSpan.Zero)
         {
-            // No permite compensación o no hay tardanza
             estado = "TARDE";
-            mensaje = $"Tardanza de {minutosTarde.TotalMinutes:F0} min (sin compensación)";
+            mensaje = $"Tardanza de {timeSpan6.TotalMinutes:F0} min (sin compensación)";
         }
         else
         {
             estado = "PUNTUAL";
             mensaje = "Asistencia puntual";
         }
-
         return new AsistenciaConCompensacionDto
         {
             Fecha = fecha,
             DiaSemana = ObtenerNombreDia(fecha.DayOfWeek),
-
-            HoraEntradaEsperada = horaEntradaEsperada,
-            HoraSalidaEsperada = horaSalidaEsperada,
-
-            HoraEntradaReal = entrada.FechaHora.TimeOfDay,
-            HoraSalidaReal = salida.FechaHora.TimeOfDay,
-
-            MinutosTarde = minutosTarde,
-            MinutosExtra = minutosExtra,
-            HorasTrabajadas = horasTrabajadas,
-            HorasEsperadas = horasEsperadas,
-            DiferenciaHoras = horasTrabajadas - horasEsperadas,
-
-            PermiteCompensacion = permiteCompensacion,
+            HoraEntradaEsperada = timeSpan,
+            HoraSalidaEsperada = timeSpan2,
+            HoraEntradaReal = marcacion.FechaHora.TimeOfDay,
+            HoraSalidaReal = marcacion2.FechaHora.TimeOfDay,
+            MinutosTarde = timeSpan6,
+            MinutosExtra = timeSpan7,
+            HorasTrabajadas = timeSpan4,
+            HorasEsperadas = timeSpan5,
+            DiferenciaHoras = timeSpan4 - timeSpan5,
+            PermiteCompensacion = flag,
             TardanzaCompensada = tardanzaCompensada,
             TardanzaNeta = tardanzaNeta,
             TiempoExtraNeto = tiempoExtraNeto,
-
             Estado = estado,
             Mensaje = mensaje
         };
@@ -182,7 +137,50 @@ public class AsistenciaService : IAsistenciaService
             DayOfWeek.Friday => "Viernes",
             DayOfWeek.Saturday => "Sábado",
             DayOfWeek.Sunday => "Domingo",
-            _ => ""
+            _ => "",
         };
+    }
+
+    // Dentro de AsistenciaService.cs
+    public class RecargosResultado
+    {
+        public double HorasExtraDiurnas { get; set; }
+        public double HorasExtraNocturnas { get; set; }
+        public double RecargosNocturnosOrdinarios { get; set; }
+    }
+
+    private RecargosResultado CalcularRecargosColombianos(TimeSpan entrada, TimeSpan salida, TimeSpan finProgramado)
+    {
+        var resultado = new RecargosResultado();
+        TimeSpan limiteNocturno = new TimeSpan(19, 0, 0); // 7:00 PM (Nueva Ley)
+
+        // 1. Calcular Horas Extra Totales (Si salió después de lo programado)
+        if (salida > finProgramado)
+        {
+            TimeSpan totalExtra = salida - finProgramado;
+
+            // HED: Extra laborada antes de las 7 PM
+            if (finProgramado < limiteNocturno)
+            {
+                TimeSpan finHED = salida > limiteNocturno ? limiteNocturno : salida;
+                resultado.HorasExtraDiurnas = (finHED - finProgramado).TotalHours;
+            }
+
+            // HEN: Extra laborada después de las 7 PM
+            if (salida > limiteNocturno)
+            {
+                TimeSpan inicioHEN = finProgramado > limiteNocturno ? finProgramado : limiteNocturno;
+                resultado.HorasExtraNocturnas = (salida - inicioHEN).TotalHours;
+            }
+        }
+
+        // 2. Recargos Nocturnos Ordinarios (Dentro del horario pero después de las 7 PM)
+        if (finProgramado > limiteNocturno && entrada < finProgramado)
+        {
+            TimeSpan inicioRecargo = entrada > limiteNocturno ? entrada : limiteNocturno;
+            resultado.RecargosNocturnosOrdinarios = (finProgramado - inicioRecargo).TotalHours;
+        }
+
+        return resultado;
     }
 }

@@ -1,4 +1,4 @@
-// src/app/(tabs)/index.tsx
+// src/app/(tabs)/index.tsx - OPTIMIZADO
 import { Button, Card, Icon, Text } from '@rneui/themed';
 import dayjs from 'dayjs';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -6,8 +6,6 @@ import * as Location from 'expo-location';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, AppState, AppStateStatus, Image, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-
-import { nowInBogota } from '@/src/utils/date';
 
 import {
   crearMarcacion,
@@ -21,6 +19,8 @@ import {
 } from '@/src/api/marcaciones';
 import { useAuth } from '@/src/auth/AuthContext';
 import LoadingIndicator from '@/src/components/LoadingIndicator';
+import ProgressOverlay from '@/src/components/ProgressOverlay';
+import { nowInBogota } from '@/src/utils/date';
 
 // ✅ Colores corporativos "La Media Naranja"
 const CorporateColors = {
@@ -35,6 +35,25 @@ const CorporateColors = {
   textLight: '#6b7280',
 };
 
+// ✅ Estados de progreso
+type ProgressState = {
+  visible: boolean;
+  step: string;
+  percent: number;
+  isSuccess: boolean;
+  isError: boolean;
+  errorMessage: string;
+};
+
+const initialProgress: ProgressState = {
+  visible: false,
+  step: '',
+  percent: 0,
+  isSuccess: false,
+  isError: false,
+  errorMessage: '',
+};
+
 export default function HomeScreen() {
   const { user, logout, token, isLoading: authLoading } = useAuth();
 
@@ -45,12 +64,14 @@ export default function HomeScreen() {
   const [isSubmittingAlmuerzo, setIsSubmittingAlmuerzo] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
+  
+  // ✅ Estado del overlay de progreso
+  const [progress, setProgress] = useState<ProgressState>(initialProgress);
 
   const nextMarkType: 'entrada' | 'salida' =
     !lastMarcacion || lastMarcacion.tipo === 'salida' ? 'entrada' : 'salida';
 
   const buttonLabel = `Marcar ${nextMarkType === 'entrada' ? 'Entrada' : 'Salida'}`;
-  // ✅ Colores corporativos para botones
   const buttonColor = nextMarkType === 'entrada' ? CorporateColors.success : CorporateColors.primary;
 
   const fetchLastMarcacion = useCallback(async () => {
@@ -94,6 +115,27 @@ export default function HomeScreen() {
     return () => subscription.remove();
   }, [authLoading, token, fetchLastMarcacion]);
 
+  // ✅ FUNCIÓN OPTIMIZADA para obtener ubicación
+  const obtenerUbicacionRapida = async (): Promise<Location.LocationObject> => {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') {
+      throw new Error('PERMISSION_DENIED');
+    }
+
+    // ✅ OPTIMIZACIÓN CLAVE: Usar Balanced en lugar de High
+    // High: 5-15 segundos | Balanced: 1-3 segundos
+    // Para geocerca de 50m, Balanced es más que suficiente
+    const location = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.Balanced, // ✅ CAMBIO CLAVE
+      // Tiempo máximo de espera: 8 segundos
+      timeInterval: 8000,
+    });
+
+    console.log(`[GPS] Precisión: ${location.coords.accuracy?.toFixed(1)}m`);
+    return location;
+  };
+
+  // ✅ MARCACIÓN OPTIMIZADA con feedback de progreso
   const handleMarcar = async () => {
     setIsSubmitting(true);
     setError(null);
@@ -105,27 +147,58 @@ export default function HomeScreen() {
       return;
     }
 
+    // Mostrar overlay de progreso
+    setProgress({
+      visible: true,
+      step: 'Obteniendo ubicación...',
+      percent: 20,
+      isSuccess: false,
+      isError: false,
+      errorMessage: '',
+    });
+
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        const msg = 'Permiso de ubicación denegado. No se puede marcar.';
-        setLocationError(msg);
-        Alert.alert('Permiso Requerido', 'Necesitamos acceso a tu ubicación para registrar la marcación.');
+      // PASO 1: Obtener ubicación (OPTIMIZADO)
+      const startGps = Date.now();
+      let location: Location.LocationObject;
+      
+      try {
+        location = await obtenerUbicacionRapida();
+        console.log(`[Marcacion] GPS tomó: ${Date.now() - startGps}ms`);
+      } catch (locationErr: any) {
+        if (locationErr.message === 'PERMISSION_DENIED') {
+          setProgress({
+            ...initialProgress,
+            visible: true,
+            isError: true,
+            errorMessage: 'Permiso de ubicación denegado',
+          });
+          setLocationError('Permiso de ubicación denegado.');
+          setIsSubmitting(false);
+          return;
+        }
+        
+        console.error('Error obteniendo ubicación:', locationErr);
+        setProgress({
+          ...initialProgress,
+          visible: true,
+          isError: true,
+          errorMessage: 'No se pudo obtener la ubicación',
+        });
+        setLocationError('No se pudo obtener la ubicación actual.');
         setIsSubmitting(false);
         return;
       }
 
-      let location: Location.LocationObject;
-      try {
-        location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      } catch (locationErr: any) {
-        console.error('Error obteniendo ubicación:', locationErr);
-        const msg = 'No se pudo obtener la ubicación actual. Intenta de nuevo.';
-        setLocationError(msg);
-        Alert.alert('Error de Ubicación', 'No pudimos obtener tu ubicación. Revisa GPS/señal e inténtalo de nuevo.');
-        setIsSubmitting(false);
-        return;
-      }
+      // PASO 2: Enviar al servidor
+      setProgress({
+        visible: true,
+        step: 'Registrando marcación...',
+        percent: 60,
+        isSuccess: false,
+        isError: false,
+        errorMessage: '',
+      });
 
       const marcacionData: MarcacionCreacionDto = {
         tipo: nextMarkType,
@@ -133,37 +206,53 @@ export default function HomeScreen() {
         longitud: location.coords.longitude,
       };
 
+      const startRequest = Date.now();
       const nuevaMarcacion = await crearMarcacion(marcacionData);
+      console.log(`[Marcacion] Request tomó: ${Date.now() - startRequest}ms`);
 
+      // PASO 3: Éxito
       const hm = nuevaMarcacion?.fechaHoraLocal
         ? dayjs(nuevaMarcacion.fechaHoraLocal).format('HH:mm')
         : '--:--';
 
-      Alert.alert(
-        'Éxito',
-        `Marcación de ${nextMarkType === 'entrada' ? 'Entrada' : 'Salida'} registrada a las ${hm}.`
-      );
+      setProgress({
+        visible: true,
+        step: `¡${nextMarkType === 'entrada' ? 'Entrada' : 'Salida'} registrada a las ${hm}!`,
+        percent: 100,
+        isSuccess: true,
+        isError: false,
+        errorMessage: '',
+      });
 
       setLastMarcacion(nuevaMarcacion);
       setError(null);
 
       const estado = await obtenerEstadoAlmuerzo();
       setEstadoAlmuerzo(estado);
+
     } catch (err: any) {
       console.error('Error al marcar:', err?.response?.data || err?.message);
       let errorMessage = `Error al registrar la marcación de ${nextMarkType}. Intenta de nuevo.`;
+      
       if (err?.response?.status === 400 && typeof err.response.data === 'string') {
         errorMessage = err.response.data;
       } else if (err?.response?.status === 401) {
         errorMessage = 'Tu sesión ha expirado. Por favor, inicia sesión de nuevo.';
       }
+      
+      setProgress({
+        ...initialProgress,
+        visible: true,
+        isError: true,
+        errorMessage,
+      });
       setError(errorMessage);
-      Alert.alert('Error', errorMessage);
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  // ✅ ALMUERZO OPTIMIZADO
   const handleAlmuerzo = async (accion: 'inicio' | 'fin') => {
     setIsSubmittingAlmuerzo(true);
     setError(null);
@@ -175,27 +264,50 @@ export default function HomeScreen() {
       return;
     }
 
+    const accionLabel = accion === 'inicio' ? 'Iniciando' : 'Finalizando';
+    setProgress({
+      visible: true,
+      step: `${accionLabel} almuerzo...`,
+      percent: 30,
+      isSuccess: false,
+      isError: false,
+      errorMessage: '',
+    });
+
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        const msg = 'Permiso de ubicación denegado.';
-        setLocationError(msg);
-        Alert.alert('Permiso Requerido', 'Necesitamos acceso a tu ubicación.');
+      let location: Location.LocationObject;
+      try {
+        location = await obtenerUbicacionRapida();
+      } catch (locationErr: any) {
+        if (locationErr.message === 'PERMISSION_DENIED') {
+          setProgress({
+            ...initialProgress,
+            visible: true,
+            isError: true,
+            errorMessage: 'Permiso de ubicación denegado',
+          });
+          setIsSubmittingAlmuerzo(false);
+          return;
+        }
+        
+        setProgress({
+          ...initialProgress,
+          visible: true,
+          isError: true,
+          errorMessage: 'No se pudo obtener la ubicación',
+        });
         setIsSubmittingAlmuerzo(false);
         return;
       }
 
-      let location: Location.LocationObject;
-      try {
-        location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      } catch (locationErr: any) {
-        console.error('Error obteniendo ubicación:', locationErr);
-        const msg = 'No se pudo obtener la ubicación actual.';
-        setLocationError(msg);
-        Alert.alert('Error de Ubicación', 'No pudimos obtener tu ubicación.');
-        setIsSubmittingAlmuerzo(false);
-        return;
-      }
+      setProgress({
+        visible: true,
+        step: 'Registrando...',
+        percent: 70,
+        isSuccess: false,
+        isError: false,
+        errorMessage: '',
+      });
 
       const almuerzoData = {
         latitud: location.coords.latitude,
@@ -204,26 +316,58 @@ export default function HomeScreen() {
 
       if (accion === 'inicio') {
         await iniciarAlmuerzo(almuerzoData);
-        Alert.alert('Éxito', 'Inicio de almuerzo registrado correctamente.');
+        setProgress({
+          visible: true,
+          step: '¡Almuerzo iniciado!',
+          percent: 100,
+          isSuccess: true,
+          isError: false,
+          errorMessage: '',
+        });
       } else {
         const resultado = await finalizarAlmuerzo(almuerzoData);
-        Alert.alert('Éxito', `Fin de almuerzo registrado. Duración: ${resultado.tiempoAlmuerzoMinutos} minutos.`);
+        setProgress({
+          visible: true,
+          step: `¡Almuerzo finalizado! (${resultado.tiempoAlmuerzoMinutos} min)`,
+          percent: 100,
+          isSuccess: true,
+          isError: false,
+          errorMessage: '',
+        });
       }
 
       const estado = await obtenerEstadoAlmuerzo();
       setEstadoAlmuerzo(estado);
       await fetchLastMarcacion();
+      
     } catch (err: any) {
       console.error('Error en almuerzo:', err?.response?.data || err?.message);
       let errorMessage = 'Error al registrar el almuerzo. Intenta de nuevo.';
       if (err?.response?.status === 400 && typeof err.response.data === 'string') {
         errorMessage = err.response.data;
       }
+      
+      setProgress({
+        ...initialProgress,
+        visible: true,
+        isError: true,
+        errorMessage,
+      });
       setError(errorMessage);
-      Alert.alert('Error', errorMessage);
     } finally {
       setIsSubmittingAlmuerzo(false);
     }
+  };
+
+  // Cerrar overlay de progreso
+  const handleDismissProgress = () => {
+    setProgress(initialProgress);
+  };
+
+  // Reintentar desde el overlay
+  const handleRetry = () => {
+    setProgress(initialProgress);
+    handleMarcar();
   };
 
   if (authLoading || (isLoading && !lastMarcacion)) {
@@ -239,31 +383,40 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      {/* ✅ Header con gradiente corporativo */}
+      {/* ✅ Overlay de progreso */}
+      <ProgressOverlay
+        visible={progress.visible}
+        step={progress.step}
+        percent={progress.percent}
+        isSuccess={progress.isSuccess}
+        isError={progress.isError}
+        errorMessage={progress.errorMessage}
+        onDismiss={handleDismissProgress}
+        onRetry={progress.isError ? handleRetry : undefined}
+      />
+
+      {/* Header con gradiente corporativo */}
       <LinearGradient
         colors={[CorporateColors.primaryDark, CorporateColors.primary, CorporateColors.secondary]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={styles.header}
       >
-        <SafeAreaView edges={['top']}>
-          <View style={styles.headerContent}>
-            <Text style={styles.greeting}>¡Hola, {user?.nombreCompleto || 'Usuario'}!</Text>
-
-            <Image
-              source={require('../../assets/images/logo.png')}
-              style={styles.logo}
-              resizeMode="contain"
-            />
-
-            <Text style={styles.dateText}>{nowInBogota().format('dddd, D [de] MMMM')}</Text>
-          </View>
+        <SafeAreaView edges={['top']} style={styles.headerContent}>
+          <Text style={styles.greeting}>¡Hola, {user?.nombreCompleto?.split(' ')[0]}!</Text>
+          <Image
+            source={require('@/assets/images/logo.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+          <Text style={styles.dateText}>
+            {dayjs().format('dddd, D [de] MMMM')}
+          </Text>
         </SafeAreaView>
       </LinearGradient>
 
-      {/* Contenido */}
+      {/* Contenido principal */}
       <View style={styles.content}>
-        {/* Card de última marcación */}
         <Card containerStyle={styles.card}>
           <View style={styles.lastMarkContainer}>
             <Icon
@@ -301,7 +454,7 @@ export default function HomeScreen() {
           {locationError && <Text style={[styles.errorText, { color: CorporateColors.warning }]}>{locationError}</Text>}
         </Card>
 
-        {/* ✅ Botón de marcar con color corporativo */}
+        {/* Botón de marcar */}
         <Button
           title={buttonLabel}
           onPress={handleMarcar}
@@ -321,7 +474,7 @@ export default function HomeScreen() {
           titleStyle={styles.buttonTitle}
         />
 
-        {/* Botón de almuerzo - inicio */}
+        {/* Botón almuerzo - inicio */}
         {lastMarcacion?.tipo === 'entrada' && estadoAlmuerzo?.estado === 'sin_almuerzo' && (
           <Button
             title="Iniciar Almuerzo"
@@ -335,7 +488,7 @@ export default function HomeScreen() {
           />
         )}
 
-        {/* Botón de almuerzo - fin */}
+        {/* Botón almuerzo - fin */}
         {estadoAlmuerzo?.estado === 'almuerzo_en_curso' && (
           <Button
             title="Finalizar Almuerzo"

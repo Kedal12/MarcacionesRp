@@ -1,17 +1,15 @@
-﻿using MarcacionAPI.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq.Expressions;
+using MarcacionAPI.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace MarcacionAPI.Data;
 
 public class ApplicationDbContext : DbContext
 {
-    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options)
-    {
-    }
-
-    // --- DbSets ---
     public DbSet<Sede> Sedes { get; set; }
-
     public DbSet<Usuario> Usuarios { get; set; }
     public DbSet<Marcacion> Marcaciones { get; set; }
     public DbSet<Auditoria> Auditorias { get; set; }
@@ -21,60 +19,92 @@ public class ApplicationDbContext : DbContext
     public DbSet<Feriado> Feriados { get; set; }
     public DbSet<Ausencia> Ausencias { get; set; }
     public DbSet<Correccion> Correcciones { get; set; }
+    
+    // ✅ DbSet para LoginLogs (autenticación facial)
+    public DbSet<LoginLog> LoginLogs { get; set; }
+
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+        : base(options)
+    {
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
 
-        // --- Usuario ---
+        // ============================================================================
+        // CONFIGURACIÓN DE USUARIO
+        // ============================================================================
         modelBuilder.Entity<Usuario>(e =>
         {
-            // FK a Sede
             e.HasOne(u => u.Sede)
              .WithMany()
              .HasForeignKey(u => u.IdSede)
              .OnDelete(DeleteBehavior.Restrict);
 
-            // Índice único por Email
             e.HasIndex(u => u.Email).IsUnique();
-
-            // Evita que EF mapee/lea una columna sombra "HorarioId" en Usuarios
             e.Ignore("HorarioId");
+            
+            // ✅ Configuración para columnas de autenticación facial
+            e.Property(u => u.FotoPerfilPath)
+             .HasMaxLength(500)
+             .IsRequired(false);
+            
+            e.Property(u => u.FaceEmbedding)
+             .HasColumnType("varbinary(max)")
+             .IsRequired(false);
+            
+            // ✅ Índice para búsquedas por NumeroDocumento en login facial
+            e.HasIndex(u => u.NumeroDocumento)
+             .HasDatabaseName("IX_Usuarios_NumeroDocumento")
+             .HasFilter("[Activo] = 1");
         });
 
-        // --- Marcacion ---
-        modelBuilder.Entity<Marcacion>()
-            .HasOne(m => m.Usuario)
-            .WithMany()
-            .HasForeignKey(m => m.IdUsuario)
-            .OnDelete(DeleteBehavior.Restrict);
+        // ============================================================================
+        // CONFIGURACIÓN DE MARCACIÓN
+        // ============================================================================
+        modelBuilder.Entity<Marcacion>(e =>
+        {
+            e.HasOne(m => m.Usuario)
+             .WithMany()
+             .HasForeignKey(m => m.IdUsuario)
+             .OnDelete(DeleteBehavior.Restrict);
 
-        // --- Sede (precisiones) ---
+            e.Property(m => m.LatitudMarcacion).HasPrecision(9, 6);
+            e.Property(m => m.LongitudMarcacion).HasPrecision(10, 6);
+
+            e.Property(m => m.FechaHora)
+             .HasColumnType("datetimeoffset(7)")
+             .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            e.Property(m => m.InicioAlmuerzo).HasColumnType("datetimeoffset(7)");
+            e.Property(m => m.FinAlmuerzo).HasColumnType("datetimeoffset(7)");
+        });
+
+        // ============================================================================
+        // CONFIGURACIÓN DE SEDE
+        // ============================================================================
         modelBuilder.Entity<Sede>(entity =>
         {
             entity.Property(e => e.Lat).HasPrecision(9, 6);
             entity.Property(e => e.Lon).HasPrecision(10, 6);
         });
 
-        // --- Marcacion (precisiones) ---
-        modelBuilder.Entity<Marcacion>(entity =>
-        {
-            entity.Property(m => m.LatitudMarcacion).HasPrecision(9, 6);
-            entity.Property(m => m.LongitudMarcacion).HasPrecision(10, 6);
-        });
-
-        // --- Auditoria ---
+        // ============================================================================
+        // CONFIGURACIÓN DE AUDITORIA
+        // ============================================================================
         modelBuilder.Entity<Auditoria>(entity =>
         {
             entity.ToTable("Auditoria");
             entity.Property(a => a.Fecha).HasDefaultValueSql("SYSDATETIMEOFFSET()");
         });
 
-        // --- Horario ---
+        // ============================================================================
+        // CONFIGURACIÓN DE HORARIO Y DETALLE
+        // ============================================================================
         modelBuilder.Entity<Horario>(entity =>
         {
             entity.HasIndex(h => h.Nombre).IsUnique(false);
-
             entity.HasMany(h => h.Detalles)
                   .WithOne(d => d.Horario)
                   .HasForeignKey(d => d.IdHorario)
@@ -87,25 +117,18 @@ public class ApplicationDbContext : DbContext
                   .OnDelete(DeleteBehavior.SetNull);
         });
 
-        // --- HorarioDetalle ---
         modelBuilder.Entity<HorarioDetalle>(entity =>
         {
             entity.HasIndex(d => new { d.IdHorario, d.DiaSemana }).IsUnique();
-
-            // Fuerza el nombre de columna correcto en BD
             entity.Property(d => d.IdHorario).HasColumnName("IdHorario");
-
-            entity.HasOne(d => d.Horario)
-                  .WithMany(h => h.Detalles)
-                  .HasForeignKey(d => d.IdHorario)
-                  .OnDelete(DeleteBehavior.Cascade);
         });
 
-        // --- UsuarioHorario ---
+        // ============================================================================
+        // CONFIGURACIÓN DE USUARIO-HORARIO (ASIGNACIONES)
+        // ============================================================================
         modelBuilder.Entity<UsuarioHorario>(entity =>
         {
             entity.HasIndex(uh => new { uh.IdUsuario, uh.Desde, uh.Hasta });
-
             entity.Property(uh => uh.IdUsuario).HasColumnName("IdUsuario");
             entity.Property(uh => uh.IdHorario).HasColumnName("IdHorario");
 
@@ -115,15 +138,19 @@ public class ApplicationDbContext : DbContext
                   .OnDelete(DeleteBehavior.Restrict);
 
             entity.HasOne(uh => uh.Horario)
-                  .WithMany(h => h.Asignaciones) // o .WithMany(h => h.UsuarioHorarios) si tienes la colección
+                  .WithMany(h => h.Asignaciones)
                   .HasForeignKey(uh => uh.IdHorario)
                   .OnDelete(DeleteBehavior.Restrict);
         });
 
-        // --- Feriado ---
+        // ============================================================================
+        // CONFIGURACIÓN DE FERIADO
+        // ============================================================================
         modelBuilder.Entity<Feriado>().HasKey(f => f.Fecha);
 
-        // --- Ausencia ---
+        // ============================================================================
+        // CONFIGURACIÓN DE AUSENCIA
+        // ============================================================================
         modelBuilder.Entity<Ausencia>(entity =>
         {
             entity.HasOne(a => a.Usuario)
@@ -135,7 +162,9 @@ public class ApplicationDbContext : DbContext
             entity.Property(a => a.CreatedAt).HasDefaultValueSql("SYSDATETIMEOFFSET()");
         });
 
-        // --- Correccion ---
+        // ============================================================================
+        // CONFIGURACIÓN DE CORRECCIÓN
+        // ============================================================================
         modelBuilder.Entity<Correccion>(entity =>
         {
             entity.HasOne(c => c.Usuario)
@@ -147,14 +176,38 @@ public class ApplicationDbContext : DbContext
             entity.Property(c => c.CreatedAt).HasDefaultValueSql("SYSDATETIMEOFFSET()");
         });
 
-        modelBuilder.Entity<Marcacion>(e =>
+        // ============================================================================
+        // CONFIGURACIÓN DE LOGINLOG (AUTENTICACIÓN FACIAL)
+        // ============================================================================
+        modelBuilder.Entity<LoginLog>(entity =>
         {
-            e.Property(m => m.FechaHora)
-             .HasColumnType("datetimeoffset(7)")
-             .HasDefaultValueSql("SYSUTCDATETIME()");
-
-            e.Property(m => m.InicioAlmuerzo).HasColumnType("datetimeoffset(7)");
-            e.Property(m => m.FinAlmuerzo).HasColumnType("datetimeoffset(7)");
+            entity.ToTable("LoginLogs");
+            entity.HasKey(e => e.Id);
+            
+            // Configuración de la columna Confianza (precisión decimal)
+            entity.Property(e => e.Confianza)
+                .HasColumnType("decimal(5,4)")
+                .IsRequired();
+            
+            // Configuración de FechaHora con valor por defecto
+            entity.Property(e => e.FechaHora)
+                .HasColumnType("datetimeoffset(7)")
+                .HasDefaultValueSql("SYSDATETIMEOFFSET()")
+                .IsRequired();
+            
+            // Relación con Usuario
+            entity.HasOne(e => e.Usuario)
+                .WithMany()
+                .HasForeignKey(e => e.IdUsuario)
+                .OnDelete(DeleteBehavior.Restrict);
+            
+            // ✅ Índice compuesto para consultas de intentos fallidos
+            entity.HasIndex(e => new { e.IdUsuario, e.FechaHora })
+                .HasDatabaseName("IX_LoginLogs_IdUsuario_FechaHora");
+            
+            // ✅ Índice para consultas por estado de éxito
+            entity.HasIndex(e => e.Exitoso)
+                .HasDatabaseName("IX_LoginLogs_Exitoso");
         });
     }
 }

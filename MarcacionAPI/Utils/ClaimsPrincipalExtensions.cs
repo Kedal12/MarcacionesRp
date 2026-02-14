@@ -1,48 +1,31 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 
 namespace MarcacionAPI.Utils;
 
-// Define los roles exactos que usas en tu base de datos
-public static class Roles
-{
-    public const string SuperAdmin = "superadmin";
-    public const string Admin = "admin";
-    public const string Empleado = "empleado";
-}
-
 public static class ClaimsPrincipalExtensions
 {
-    /// <summary>
-    /// Comprueba si el usuario tiene el rol de SuperAdmin.
-    /// </summary>
     public static bool IsSuperAdmin(this ClaimsPrincipal user)
     {
-        return user.IsInRole(Roles.SuperAdmin);
+        return user.IsInRole("superadmin");
     }
 
-    /// <summary>
-    /// Obtiene el IdSede guardado en el claim "sede" del token JWT.
-    /// </summary>
     public static int? GetSedeId(this ClaimsPrincipal user)
     {
-        // Asegúrate que el nombre del Claim ("sede") coincida con el que pones en AuthController
-        var sedeIdClaim = user.FindFirst("sede");
-        if (sedeIdClaim != null && int.TryParse(sedeIdClaim.Value, out var sedeId))
+        // Cambia "sede" por "SedeId" para que coincida con AuthController
+        Claim claim = user.FindFirst("SedeId");
+        if (claim != null && int.TryParse(claim.Value, out var result))
         {
-            return sedeId;
+            return result;
         }
-        return null; // No se encontró o es inválido
+        return null;
     }
 
-    /// <summary>
-    /// Obtiene el Id (numérico) del usuario del token.
-    /// </summary>
     public static int? GetUserId(this ClaimsPrincipal user)
     {
-        var idClaim = user.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (idClaim != null && int.TryParse(idClaim, out var id))
+        string text = user.FindFirstValue("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier");
+        if (text != null && int.TryParse(text, out var result))
         {
-            return id;
+            return result;
         }
         return null;
     }

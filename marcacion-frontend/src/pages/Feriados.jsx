@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react"; // --- useMemo AÑADIDO ---
+import { useState, useMemo } from "react";
 import { useSnackbar } from "notistack";
 import {
   Paper, Stack, Typography, Button, IconButton, Chip, Box, Alert, CircularProgress,
@@ -14,217 +14,150 @@ import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import dayjs from "dayjs";
 import 'dayjs/locale/es';
 import utc from 'dayjs/plugin/utc';
-import { getFeriados, createOrUpdateFeriado, deleteFeriado } from "../api/feriados";
-// --- AÑADIDO: Importar useAuth y definir Roles ---
+
+// 1. Importar Hooks y Auth
+import { useFeriados, useCrearOActualizarFeriado, useEliminarFeriado } from "../hooks/useFeriados";
 import { useAuth } from "../auth/AuthContext";
 
-const ROLES = {
-  SUPERADMIN: "superadmin",
-  ADMIN: "admin"
-};
-// --- FIN AÑADIDO ---
-
-
 dayjs.extend(utc);
-// dayjs.locale('es');
 
-// Helper para formatear DateOnly (YYYY-MM-DD) para mostrar
-const formatDate = (dateOnlyString) => {
-    if (!dateOnlyString) return "-";
-    return dayjs(dateOnlyString).format("DD/MM/YYYY");
+const ROLES = { SUPERADMIN: "superadmin", ADMIN: "admin" };
+
+const formatDate = (dateString) => {
+  if (!dateString) return "-";
+  return dayjs.utc(dateString).format("DD/MM/YYYY");
 };
 
-
-export default function Feriados() {
+export default function FeriadosPage() {
   const { enqueueSnackbar } = useSnackbar();
-  // --- AÑADIDO: Obtener usuario y rol ---
   const { user } = useAuth();
   const isSuperAdmin = useMemo(() => user?.rol === ROLES.SUPERADMIN, [user]);
-  // --- FIN AÑADIDO ---
 
-  const currentYear = dayjs().year();
-  const years = Array.from({ length: 5 }, (_, i) => currentYear + 2 - i).sort((a, b) => b - a);
+  // Estados locales para el formulario
+  const [selectedYear, setSelectedYear] = useState(dayjs().year());
+  const [formFecha, setFormFecha] = useState(dayjs());
+  const [formNombre, setFormNombre] = useState("");
+  const [formLaborable, setFormLaborable] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
 
-  const [feriados, setFeriados] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-  const [selectedYear, setSelectedYear] = useState(currentYear);
+  // 2. Hooks de React Query
+  const { data: feriados = [], isLoading, isError, refetch } = useFeriados(selectedYear);
+  const { mutate: guardarFeriado, isLoading: isSaving } = useCrearOActualizarFeriado();
+  const { mutate: eliminarFeriado } = useEliminarFeriado();
 
-  // Estados para el formulario (solo usados por superadmin)
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [nombreFeriado, setNombreFeriado] = useState("");
-  const [esLaborable, setEsLaborable] = useState(false);
-  const [editingFecha, setEditingFecha] = useState(null);
-
-  // Carga los feriados (visible para admin y superadmin)
-  function loadFeriados(year) {
-    setLoading(true);
-    setError(null);
-    getFeriados(year)
-      .then(setFeriados)
-      .catch(e => {
-        setError(e?.response?.data || e.message || "Error cargando feriados");
-        setFeriados([]);
-      })
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(() => {
-    loadFeriados(selectedYear);
-  }, [selectedYear]);
-
-  // Las siguientes funciones solo son accesibles para SuperAdmin
-  // ya que los botones/formulario están ocultos para otros roles.
-  const clearForm = () => {
-      setSelectedDate(null);
-      setNombreFeriado("");
-      setEsLaborable(false);
-      setEditingFecha(null);
-  };
-
-  const handleEdit = (feriado) => {
-      setSelectedDate(dayjs(feriado.fecha));
-      setNombreFeriado(feriado.nombre);
-      setEsLaborable(feriado.laborable);
-      setEditingFecha(feriado.fecha);
-  };
-
-  const handleSave = async () => {
-    if (!selectedDate || !nombreFeriado.trim()) {
-      enqueueSnackbar("Selecciona una fecha e ingresa un nombre.", { variant: "warning" });
+  const handleSave = () => {
+    if (!formNombre.trim()) {
+      enqueueSnackbar("El nombre es obligatorio", { variant: "warning" });
       return;
     }
 
-    setSaving(true);
-    const fechaFormateada = dayjs(selectedDate).format("YYYY-MM-DD");
-    const dto = { nombre: nombreFeriado.trim(), laborable: esLaborable };
+    const fechaStr = formFecha.format("YYYY-MM-DD");
+    const dto = { nombre: formNombre, laborable: formLaborable };
 
-    try {
-      await createOrUpdateFeriado(fechaFormateada, dto);
-      enqueueSnackbar(`Feriado ${editingFecha ? 'actualizado' : 'guardado'}`, { variant: "success" });
-      clearForm();
-      loadFeriados(selectedYear);
-    } catch (e) {
-      enqueueSnackbar(e?.response?.data || "Error al guardar el feriado", { variant: "error" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDelete = async (feriado) => {
-    if (!confirm(`¿Eliminar el feriado "${feriado.nombre}" del ${formatDate(feriado.fecha)}?`)) return;
-
-    try {
-      await deleteFeriado(feriado.fecha);
-      enqueueSnackbar("Feriado eliminado", { variant: "success" });
-      loadFeriados(selectedYear);
-      if (editingFecha === feriado.fecha) {
-           clearForm();
+    guardarFeriado({ fecha: fechaStr, dto }, {
+      onSuccess: () => {
+        resetForm();
       }
-    } catch (e) {
-      enqueueSnackbar(e?.response?.data || "Error al eliminar el feriado", { variant: "error" });
+    });
+  };
+
+  const handleEdit = (f) => {
+    setFormFecha(dayjs.utc(f.fecha));
+    setFormNombre(f.nombre);
+    setFormLaborable(f.laborable);
+    setIsEditing(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDelete = (f) => {
+    if (window.confirm(`¿Eliminar feriado ${formatDate(f.fecha)}?`)) {
+      eliminarFeriado(f.fecha);
     }
   };
 
+  const resetForm = () => {
+    setFormNombre("");
+    setFormLaborable(false);
+    setFormFecha(dayjs());
+    setIsEditing(false);
+  };
 
   return (
     <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="es">
       <Stack spacing={3}>
-        <Typography variant="h5" fontWeight={800}>Gestión de Feriados</Typography>
+        <Stack direction="row" justifyContent="space-between" alignItems="center">
+          <Typography variant="h5" fontWeight={800}>Gestión de Feriados</Typography>
+          <IconButton onClick={() => refetch()} color="primary"><ReplayIcon /></IconButton>
+        </Stack>
 
-        {/* --- MODIFICADO: Formulario solo para SuperAdmin --- */}
+        {/* Formulario de Creación/Edición (Solo SuperAdmin) */}
         {isSuperAdmin && (
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="h6" gutterBottom>
-                {editingFecha ? `Editando Feriado: ${formatDate(editingFecha)}` : "Añadir/Editar Feriado"}
+          <Paper sx={{ p: 2, borderLeft: '5px solid', borderColor: isEditing ? 'warning.main' : 'primary.main' }}>
+            <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+              {isEditing ? "Editar Feriado" : "Agregar Nuevo Feriado"}
             </Typography>
             <Grid container spacing={2} alignItems="center">
               <Grid item xs={12} sm={3}>
                 <DatePicker
-                  label="Fecha *"
-                  value={selectedDate}
-                  onChange={(newValue) => {
-                      setSelectedDate(newValue);
-                      if(editingFecha && newValue && dayjs(newValue).format("YYYY-MM-DD") !== editingFecha) {
-                          setEditingFecha(null);
-                          setNombreFeriado("");
-                          setEsLaborable(false);
-                      }
-                  }}
+                  label="Fecha"
+                  value={formFecha}
+                  onChange={setFormFecha}
+                  disabled={isEditing || isSaving}
                   slotProps={{ textField: { fullWidth: true, size: 'small' } }}
-                  format="DD/MM/YYYY"
                 />
               </Grid>
               <Grid item xs={12} sm={4}>
                 <TextField
-                  label="Nombre del Feriado *"
-                  value={nombreFeriado}
-                  onChange={(e) => setNombreFeriado(e.target.value)}
+                  label="Nombre del Feriado"
                   fullWidth
                   size="small"
+                  value={formNombre}
+                  onChange={(e) => setFormNombre(e.target.value)}
+                  disabled={isSaving}
                 />
               </Grid>
-              <Grid item xs={12} sm={2}>
-                 <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={esLaborable}
-                      onChange={(e) => setEsLaborable(e.target.checked)}
-                    />
-                  }
-                  label="Laborable"
-                  sx={{ whiteSpace: 'nowrap'}}
+              <Grid item xs={6} sm={2}>
+                <FormControlLabel
+                  control={<Checkbox checked={formLaborable} onChange={(e) => setFormLaborable(e.target.checked)} />}
+                  label="Es Laborable"
+                  disabled={isSaving}
                 />
               </Grid>
-               <Grid item xs={6} sm="auto">
-                 <Button
+              <Grid item xs={6} sm={3}>
+                <Stack direction="row" spacing={1}>
+                  <Button
                     variant="contained"
-                    onClick={handleSave}
-                    disabled={saving || !selectedDate || !nombreFeriado.trim()}
-                    startIcon={saving ? <CircularProgress size={20} color="inherit" /> : <AddIcon />}
                     fullWidth
-                 >
-                    {editingFecha ? "Actualizar" : "Guardar"}
-                 </Button>
-              </Grid>
-              <Grid item xs={6} sm="auto">
-                 <Button variant="outlined" onClick={clearForm} fullWidth disabled={saving}>
-                    Limpiar / Cancelar Edición
-                 </Button>
+                    onClick={handleSave}
+                    disabled={isSaving}
+                    startIcon={isSaving ? <CircularProgress size={20} color="inherit" /> : <AddIcon />}
+                  >
+                    {isEditing ? "Actualizar" : "Guardar"}
+                  </Button>
+                  {isEditing && (
+                    <Button variant="outlined" color="inherit" onClick={resetForm}>Cancelar</Button>
+                  )}
+                </Stack>
               </Grid>
             </Grid>
           </Paper>
         )}
-        {/* --- FIN MODIFICADO --- */}
 
-
-        {/* Filtro por Año y Lista de Feriados (Visible para todos los admins) */}
-        <Paper>
-          <Stack direction="row" spacing={2} alignItems="center" sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-            <FormControl sx={{ minWidth: 120 }} size="small">
-              <InputLabel id="year-select-label">Año</InputLabel>
+        {/* Listado de Feriados */}
+        <Paper elevation={3}>
+          <Box sx={{ p: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Typography variant="h6">Año:</Typography>
+            <FormControl size="small" sx={{ minWidth: 120 }}>
               <Select
-                labelId="year-select-label"
                 value={selectedYear}
-                label="Año"
                 onChange={(e) => setSelectedYear(e.target.value)}
-                disabled={loading}
               >
-                {years.map(y => <MenuItem key={y} value={y}>{y}</MenuItem>)}
+                {[2024, 2025, 2026, 2027].map(y => <MenuItem key={y} value={y}>{y}</MenuItem>)}
               </Select>
             </FormControl>
-             <Box sx={{ flexGrow: 1 }} />
-             <Tooltip title="Refrescar Lista">
-                <span>
-                 <IconButton onClick={() => loadFeriados(selectedYear)} disabled={loading}>
-                    <ReplayIcon />
-                 </IconButton>
-                </span>
-             </Tooltip>
-          </Stack>
+          </Box>
 
-          {error && <Alert severity="error" sx={{ m: 2 }}>{String(error)}</Alert>}
+          {isError && <Alert severity="error" sx={{ m: 2 }}>Error al cargar feriados</Alert>}
 
           <TableContainer>
             <Table size="small">
@@ -233,36 +166,18 @@ export default function Feriados() {
                   <TableCell>Fecha</TableCell>
                   <TableCell>Nombre</TableCell>
                   <TableCell>¿Laborable?</TableCell>
-                  {/* --- MODIFICADO: Columna solo para SuperAdmin --- */}
-                  {isSuperAdmin && (
-                    <TableCell align="right">Acciones</TableCell>
-                  )}
-                  {/* --- FIN MODIFICADO --- */}
+                  {isSuperAdmin && <TableCell align="right">Acciones</TableCell>}
                 </TableRow>
               </TableHead>
               <TableBody>
-                {loading && (
-                  <TableRow>
-                    {/* --- MODIFICADO: ColSpan dinámico --- */}
-                    <TableCell colSpan={isSuperAdmin ? 4 : 3} align="center" sx={{ py: 4 }}>
-                      <CircularProgress />
-                    </TableCell>
-                    {/* --- FIN MODIFICADO --- */}
-                  </TableRow>
-                )}
-                {!loading && feriados.length === 0 && (
-                  <TableRow>
-                    {/* --- MODIFICADO: ColSpan dinámico --- */}
-                    <TableCell colSpan={isSuperAdmin ? 4 : 3} align="center" sx={{ py: 4, color: "text.secondary" }}>
-                      No hay feriados definidos para el año {selectedYear}.
-                    </TableCell>
-                    {/* --- FIN MODIFICADO --- */}
-                  </TableRow>
-                )}
-                {!loading && feriados.map((f) => (
-                  <TableRow key={f.fecha} hover sx={{ '&:last-child td, &:last-child th': { border: 0 } }}>
-                    <TableCell component="th" scope="row">
-                      {formatDate(f.fecha)} ({dayjs(f.fecha).format('dddd')})
+                {isLoading ? (
+                  <TableRow><TableCell colSpan={4} align="center" sx={{ py: 4 }}><CircularProgress /></TableCell></TableRow>
+                ) : feriados.length === 0 ? (
+                  <TableRow><TableCell colSpan={4} align="center" sx={{ py: 4 }}>No hay feriados registrados para este año</TableCell></TableRow>
+                ) : feriados.map((f) => (
+                  <TableRow key={f.fecha} hover>
+                    <TableCell>
+                      {formatDate(f.fecha)} <Typography variant="caption" color="text.secondary">({dayjs.utc(f.fecha).format('dddd')})</Typography>
                     </TableCell>
                     <TableCell>{f.nombre}</TableCell>
                     <TableCell>
@@ -270,24 +185,19 @@ export default function Feriados() {
                         label={f.laborable ? "Sí" : "No"}
                         color={f.laborable ? "warning" : "default"}
                         size="small"
+                        variant="outlined"
                       />
                     </TableCell>
-                    {/* --- MODIFICADO: Celda solo para SuperAdmin --- */}
                     {isSuperAdmin && (
                       <TableCell align="right">
-                        <Tooltip title="Editar Feriado">
-                           <IconButton size="small" onClick={() => handleEdit(f)}>
-                               <EditIcon fontSize="small"/>
-                           </IconButton>
+                        <Tooltip title="Editar">
+                          <IconButton size="small" onClick={() => handleEdit(f)} color="primary"><EditIcon fontSize="small" /></IconButton>
                         </Tooltip>
-                        <Tooltip title="Eliminar Feriado">
-                           <IconButton size="small" color="error" onClick={() => handleDelete(f)}>
-                                <DeleteForeverIcon fontSize="small"/>
-                           </IconButton>
+                        <Tooltip title="Eliminar">
+                          <IconButton size="small" color="error" onClick={() => handleDelete(f)}><DeleteForeverIcon fontSize="small" /></IconButton>
                         </Tooltip>
                       </TableCell>
                     )}
-                    {/* --- FIN MODIFICADO --- */}
                   </TableRow>
                 ))}
               </TableBody>
@@ -298,4 +208,3 @@ export default function Feriados() {
     </LocalizationProvider>
   );
 }
-

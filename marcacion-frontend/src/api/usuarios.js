@@ -25,6 +25,18 @@ export async function eliminarUsuario(id) {
 /**
  * Resetea la contraseña de un usuario (admin).
  */
-export async function resetPassword(userId, newPassword) {
-  await api.post(`/api/usuarios/${userId}/reset-password`, { newPassword });
+export const resetPassword = async (id, password) => {
+  // Ajustado para coincidir con el DTO de C#: NewPassword (con N mayúscula)
+  const { data } = await api.post(`/api/usuarios/${id}/reset-password`, { 
+    NewPassword: password 
+  });
+  return data;
+};
+export async function importarUsuarios(file) {
+  const formData = new FormData();
+  formData.append("archivo", file);
+  const { data } = await api.post("/api/usuarios/importar-masivo", formData, {
+    headers: { "Content-Type": "multipart/form-data" }
+  });
+  return data;
 }

@@ -1,65 +1,51 @@
 import { useEffect, useState, useMemo } from "react";
-import { useSnackbar } from "notistack";
 import {
   Paper, Stack, Typography, Button, IconButton, Chip, Box, Alert, CircularProgress,
-  Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip,
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow, 
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, FormControlLabel, Switch,
-  // --- AÑADIDOS ---
-  Grid, FormControl, InputLabel, Select, MenuItem
-  // --- FIN AÑADIDOS ---
+  FormControl, InputLabel, Select, MenuItem, Tooltip // <--- ASEGÚRATE DE AGREGAR ESTO
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import ReplayIcon from "@mui/icons-material/Replay";
 import EditCalendarIcon from '@mui/icons-material/EditCalendar';
-// --- MODIFICADO: Añadido getSedes ---
-import { getHorarios, crearHorario, actualizarHorario, eliminarHorario, getHorario } from "../api/horarios";
-import { getSedes } from "../api/sedes"; // Para el filtro de sedes
-// --- FIN MODIFICADO ---
-import HorarioDetailsDialog from "../components/HorarioDetailsDialog";
-// --- AÑADIDO: Importar useAuth y definir Roles ---
+
+// 1. Importar Hooks de React Query
+import { useHorarios, useCrearHorario, useActualizarHorario, useEliminarHorario } from "../hooks/useHorarios";
+import { useSedesAll } from "../hooks/useSedes";
 import { useAuth } from "../auth/AuthContext";
+import HorarioDetailsDialog from "../components/HorarioDetailsDialog";
 
-const ROLES = {
-  SUPERADMIN: "superadmin",
-  ADMIN: "admin"
-};
-// --- FIN AÑADIDO ---
+const ROLES = { SUPERADMIN: "superadmin", ADMIN: "admin" };
 
-
-// --- MODIFICADO: Diálogo ahora maneja IdSede y roles ---
+// --- DIÁLOGO INTEGRADO CORREGIDO ---
 function HorarioDialog({ open, onClose, onSave, initial, user, sedesList }) {
-  const [nombre, setNombre] = useState(initial?.nombre ?? "");
-  const [activo, setActivo] = useState(initial?.activo ?? true);
-  // --- AÑADIDO: Estado para la Sede ---
-  const [idSede, setIdSede] = useState(initial?.idSede ? String(initial.idSede) : ""); // "" es 'Global'
+  const [nombre, setNombre] = useState("");
+  const [activo, setActivo] = useState(true);
+  const [idSede, setIdSede] = useState(""); 
+  
   const isSuperAdmin = useMemo(() => user?.rol === ROLES.SUPERADMIN, [user]);
-  // --- FIN AÑADIDO ---
 
+  // Sincronizar estado cuando se abre para editar
   useEffect(() => {
-    setNombre(initial?.nombre ?? "");
-    setActivo(initial?.activo ?? true);
-    // --- AÑADIDO: Actualizar Sede en edición ---
-    setIdSede(initial?.idSede ? String(initial.idSede) : "");
-    // --- FIN AÑADIDO ---
-  }, [initial]);
+    if (open) {
+      setNombre(initial?.nombre ?? "");
+      setActivo(initial?.activo ?? true);
+      setIdSede(initial?.idSede ? String(initial.idSede) : "");
+    }
+  }, [initial, open]);
 
-  const handleSave = () => {
+  const handleSaveLocal = () => {
     if (!nombre.trim()) return;
-
-    // Construye el DTO basado en los campos
     const dto = {
       nombre: nombre.trim(),
       activo,
     };
-
-    // Solo el SuperAdmin puede enviar el IdSede (null para Global)
     if (isSuperAdmin) {
-      dto.idSede = idSede ? Number(idSede) : null;
+      // Si el valor es vacío, enviamos null para que sea un horario "Global"
+      dto.idSede = idSede === "" ? null : Number(idSede);
     }
-    // Si es un Admin de Sede, el backend forzará su IdSede
-
     onSave(dto);
   };
 
@@ -74,13 +60,12 @@ function HorarioDialog({ open, onClose, onSave, initial, user, sedesList }) {
             onChange={(e) => setNombre(e.target.value)}
             autoFocus
             fullWidth
+            size="small"
           />
           <FormControlLabel
             control={<Switch checked={activo} onChange={(e) => setActivo(e.target.checked)} />}
             label={activo ? "Activo" : "Inactivo"}
           />
-
-          {/* --- AÑADIDO: Selector de Sede (solo SuperAdmin) --- */}
           {isSuperAdmin && (
             <FormControl fullWidth size="small">
               <InputLabel id="sede-select-label">Asignar Sede (Opcional)</InputLabel>
@@ -90,124 +75,68 @@ function HorarioDialog({ open, onClose, onSave, initial, user, sedesList }) {
                 label="Asignar Sede (Opcional)"
                 onChange={(e) => setIdSede(e.target.value)}
               >
-                <MenuItem value="">Global (para todas las sedes)</MenuItem>
-                {sedesList.map(s => (
-                  <MenuItem key={s.id} value={String(s.id)}>{s.nombre}</MenuItem>
+                <MenuItem value="">Global (todas las sedes)</MenuItem>
+                {/* Mapeo con validación de arreglo y keys únicas */}
+                {Array.isArray(sedesList) && sedesList.map((s) => (
+                  <MenuItem key={`sede-opt-${s.id}`} value={String(s.id)}>
+                    {s.nombre}
+                  </MenuItem>
                 ))}
               </Select>
             </FormControl>
           )}
-          {/* --- FIN AÑADIDO --- */}
-
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancelar</Button>
-        <Button variant="contained" onClick={handleSave} disabled={!nombre.trim()}>
+        <Button variant="contained" onClick={handleSaveLocal} disabled={!nombre.trim()}>
           Guardar
         </Button>
       </DialogActions>
     </Dialog>
   );
 }
-// --- FIN MODIFICADO ---
 
-
-// --- Componente Principal ---
+// --- COMPONENTE PRINCIPAL ---
 export default function Horarios() {
-  const { enqueueSnackbar } = useSnackbar();
   const { user } = useAuth();
   const isSuperAdmin = useMemo(() => user?.rol === ROLES.SUPERADMIN, [user]);
 
-  const [horarios, setHorarios] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
+  // Carga de Horarios
+  const { data: horarios = [], isLoading, isError, error, refetch } = useHorarios();
+  
+  // Carga de Sedes con Normalización de Datos
+  const { data: sedesData } = useSedesAll();
+  
+  const sedesList = useMemo(() => {
+    if (!sedesData) return [];
+    // Verifica si la API devolvió el array directo o dentro de .items
+    return Array.isArray(sedesData) ? sedesData : (sedesData.items || []);
+  }, [sedesData]);
+
+  const crearMutation = useCrearHorario();
+  const editarMutation = useActualizarHorario();
+  const eliminarMutation = useEliminarHorario();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [deletingId, setDeletingId] = useState(null);
-
   const [detailsDialogOpen, setDetailsDialogOpen] = useState(false);
   const [editingDetailsId, setEditingDetailsId] = useState(null);
-  
-  // --- AÑADIDO: Cargar Sedes para el diálogo ---
-  const [sedesList, setSedesList] = useState([]);
-  const [loadingSedes, setLoadingSedes] = useState(false);
 
-  useEffect(() => {
-    // Solo SuperAdmin necesita cargar la lista de sedes para el diálogo
-    if (isSuperAdmin) {
-      setLoadingSedes(true);
-      getSedes({ page: 1, pageSize: 1000 })
-        .then(data => setSedesList(data.items))
-        .catch(console.error)
-        .finally(() => setLoadingSedes(false));
-    }
-  }, [isSuperAdmin]);
-  // --- FIN AÑADIDO ---
-
-  function load() {
-    setLoading(true); setErr(null);
-    // getHorarios() ya está filtrado por el backend (Admin solo ve Globales y los de su Sede)
-    return getHorarios()
-      .then(setHorarios)
-      .catch(e => {
-        setErr(e?.response?.data || e.message || "Error cargando horarios");
-        setHorarios([]);
-      })
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(() => { load(); }, []);
-
-  const handleOpenDialog = (horario = null) => {
-    // 'horario' ya contiene idSede y sedeNombre desde la API
-    setEditing(horario);
-    setDialogOpen(true);
-  };
-
-  // handleSave no cambia: el backend maneja la lógica de forzar IdSede para admins
   const handleSave = async (dto) => {
-    try {
-      if (editing) {
-        await actualizarHorario(editing.id, dto);
-        enqueueSnackbar("Horario actualizado", { variant: "success" });
-      } else {
-        await crearHorario(dto);
-        enqueueSnackbar("Horario creado", { variant: "success" });
-      }
-      setDialogOpen(false);
-      setEditing(null);
-      await load();
-    } catch (e) {
-      // Backend devolverá 403 si el admin intenta editar un horario global/de otra sede
-      enqueueSnackbar(e?.response?.data || "Error al guardar el horario", { variant: "error" });
+    if (editing) {
+      await editarMutation.mutateAsync({ id: editing.id, dto });
+    } else {
+      await crearMutation.mutateAsync(dto);
     }
+    setDialogOpen(false);
+    setEditing(null);
   };
 
-  // handleDelete no cambia: el backend maneja la lógica de permisos
-  const handleDelete = async (horario) => {
-    if (!confirm(`¿Eliminar el horario "${horario.nombre}"?`)) return;
-    try {
-      setDeletingId(horario.id);
-      await eliminarHorario(horario.id);
-      enqueueSnackbar("Horario eliminado", { variant: "success" });
-      await load();
-    } catch (e) {
-      if (e?.response?.status === 409) {
-         enqueueSnackbar(e?.response?.data || "Conflicto: El horario está asignado a usuarios.", { variant: "error" });
-      } else {
-         // Backend devolverá 403 si el admin intenta borrar un horario global/de otra sede
-         enqueueSnackbar(e?.response?.data || "No se pudo eliminar el horario", { variant: "error" });
-      }
-    } finally {
-      setDeletingId(null);
+  const handleDelete = (h) => {
+    if (window.confirm(`¿Eliminar el horario "${h.nombre}"?`)) {
+        eliminarMutation.mutate(h.id);
     }
-  };
-
-  const handleOpenDetailsDialog = (idHorario) => {
-      setEditingDetailsId(idHorario);
-      setDetailsDialogOpen(true);
   };
 
   return (
@@ -215,112 +144,74 @@ export default function Horarios() {
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Typography variant="h5" fontWeight={800}>Horarios</Typography>
         <Stack direction="row" spacing={1}>
-          <Button
-            variant="outlined"
-            startIcon={<ReplayIcon />}
-            onClick={load}
-            disabled={loading}
-          >
+          <Button variant="outlined" startIcon={<ReplayIcon />} onClick={() => refetch()} disabled={isLoading}>
             Refrescar
           </Button>
-          {/* --- MODIFICADO: Botón visible para Admin y SuperAdmin --- */}
           {(isSuperAdmin || user?.rol === ROLES.ADMIN) && (
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={() => handleOpenDialog()}
-            >
+            <Button variant="contained" startIcon={<AddIcon />} onClick={() => { setEditing(null); setDialogOpen(true); }}>
               Nuevo Horario
             </Button>
           )}
-          {/* --- FIN MODIFICADO --- */}
         </Stack>
       </Stack>
 
-      {err && <Alert severity="error" sx={{ mb: 2 }}>{String(err)}</Alert>}
+      {isError && <Alert severity="error" sx={{ mb: 2 }}>{error?.message || "Error al cargar"}</Alert>}
 
-      <Paper>
+      <Paper sx={{ borderRadius: 2, overflow: 'hidden' }}>
         <TableContainer>
           <Table size="small">
-            <TableHead>
+            <TableHead sx={{ bgcolor: 'action.hover' }}>
               <TableRow>
-                <TableCell>ID</TableCell>
-                <TableCell>Nombre</TableCell>
-                {/* --- AÑADIDO: Columna Sede --- */}
-                <TableCell>Sede Asignada</TableCell>
-                {/* --- FIN AÑADIDO --- */}
-                <TableCell>Estado</TableCell>
-                {/* --- MODIFICADO: Columna visible para Admin y SuperAdmin --- */}
-                {(isSuperAdmin || user?.rol === ROLES.ADMIN) && (
-                  <TableCell align="right">Acciones</TableCell>
-                )}
-                {/* --- FIN MODIFICADO --- */}
+                <TableCell><strong>ID</strong></TableCell>
+                <TableCell><strong>Nombre</strong></TableCell>
+                <TableCell><strong>Sede Asignada</strong></TableCell>
+                <TableCell><strong>Estado</strong></TableCell>
+                {(isSuperAdmin || user?.rol === ROLES.ADMIN) && <TableCell align="right"><strong>Acciones</strong></TableCell>}
               </TableRow>
             </TableHead>
             <TableBody>
-              {loading && (
-                <TableRow>
-                  <TableCell colSpan={isSuperAdmin || user?.rol === ROLES.ADMIN ? 5 : 4} align="center" sx={{ py: 4 }}>
-                    <CircularProgress />
-                  </TableCell>
-                </TableRow>
-              )}
-              {!loading && horarios.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={isSuperAdmin || user?.rol === ROLES.ADMIN ? 5 : 4} align="center" sx={{ py: 4, color: "text.secondary" }}>
-                    No hay horarios definidos.
-                  </TableCell>
-                </TableRow>
-              )}
-              {!loading && horarios.map(h => (
+              {isLoading ? (
+                <TableRow><TableCell colSpan={5} align="center" sx={{ py: 4 }}><CircularProgress size={30} /></TableCell></TableRow>
+              ) : horarios.length === 0 ? (
+                <TableRow><TableCell colSpan={5} align="center" sx={{ py: 4 }}>No hay horarios configurados</TableCell></TableRow>
+              ) : horarios.map(h => (
                 <TableRow key={h.id} hover>
                   <TableCell>{h.id}</TableCell>
                   <TableCell>{h.nombre}</TableCell>
-                  {/* --- AÑADIDO: Celda Sede --- */}
                   <TableCell>
-                    <Chip
-                      label={h.sedeNombre || "Global"}
-                      size="small"
-                      variant="outlined"
-                      color={h.sedeNombre ? "primary" : "default"}
+                    <Chip 
+                        label={h.sedeNombre || "Global"} 
+                        size="small" 
+                        variant="outlined" 
+                        color={h.sedeNombre ? "primary" : "default"} 
                     />
                   </TableCell>
-                  {/* --- FIN AÑADIDO --- */}
                   <TableCell>
-                    <Chip
-                      label={h.activo ? "Activo" : "Inactivo"}
-                      color={h.activo ? "success" : "default"}
-                      size="small"
+                    <Chip 
+                        label={h.activo ? "Activo" : "Inactivo"} 
+                        color={h.activo ? "success" : "default"} 
+                        size="small" 
                     />
                   </TableCell>
-                  {/* --- MODIFICADO: Celda visible para Admin y SuperAdmin --- */}
                   {(isSuperAdmin || user?.rol === ROLES.ADMIN) && (
                     <TableCell align="right">
-                      <Tooltip title="Editar Detalles del Horario">
-                         <IconButton size="small" color="primary" onClick={() => handleOpenDetailsDialog(h.id)}>
-                             <EditCalendarIcon />
-                         </IconButton>
+                      <Tooltip title="Editar Detalles Diarios">
+                        <IconButton color="primary" onClick={() => { setEditingDetailsId(h.id); setDetailsDialogOpen(true); }}>
+                            <EditCalendarIcon />
+                        </IconButton>
                       </Tooltip>
-                      <Tooltip title="Editar Nombre/Estado/Sede">
-                         <IconButton size="small" onClick={() => handleOpenDialog(h)}>
-                             <EditIcon />
-                         </IconButton>
+                      <Tooltip title="Editar Nombre/Sede">
+                        <IconButton onClick={() => { setEditing(h); setDialogOpen(true); }}>
+                            <EditIcon />
+                        </IconButton>
                       </Tooltip>
-                      <Tooltip title="Eliminar Horario">
-                        <span>
-                          <IconButton
-                            size="small"
-                            color="error"
-                            onClick={() => handleDelete(h)}
-                            disabled={deletingId === h.id}
-                          >
-                            {deletingId === h.id ? <CircularProgress size={20} color="inherit"/> : <DeleteForeverIcon />}
-                          </IconButton>
-                        </span>
+                      <Tooltip title="Eliminar">
+                        <IconButton color="error" onClick={() => handleDelete(h)} disabled={eliminarMutation.isLoading}>
+                            <DeleteForeverIcon />
+                        </IconButton>
                       </Tooltip>
                     </TableCell>
                   )}
-                  {/* --- FIN MODIFICADO --- */}
                 </TableRow>
               ))}
             </TableBody>
@@ -328,34 +219,22 @@ export default function Horarios() {
         </TableContainer>
       </Paper>
 
-      {/* --- MODIFICADO: Diálogos visibles para Admin y SuperAdmin --- */}
-      {(isSuperAdmin || user?.rol === ROLES.ADMIN) && (
-        <>
-          <HorarioDialog
-            open={dialogOpen}
-            onClose={() => { setDialogOpen(false); setEditing(null); }}
-            onSave={handleSave}
-            initial={editing}
-            // --- AÑADIDO: Props para el diálogo ---
-            user={user}
-            sedesList={sedesList}
-            // --- FIN AÑADIDO ---
-          />
-          
-          {editingDetailsId && (
-            <HorarioDetailsDialog
-                open={detailsDialogOpen}
-                onClose={() => { setDetailsDialogOpen(false); setEditingDetailsId(null); }}
-                horarioId={editingDetailsId}
-                // TODO: El HorarioDetailsDialog también debería recibir el 'user'
-                // para deshabilitar el guardado si un Admin de Sede
-                // intenta (por error) editar un horario Global.
-            />
-          )}
-        </>
+      <HorarioDialog 
+        open={dialogOpen} 
+        onClose={() => setDialogOpen(false)} 
+        onSave={handleSave} 
+        initial={editing} 
+        user={user} 
+        sedesList={sedesList} 
+      />
+      
+      {editingDetailsId && (
+        <HorarioDetailsDialog 
+          open={detailsDialogOpen} 
+          onClose={() => { setDetailsDialogOpen(false); setEditingDetailsId(null); }} 
+          horarioId={editingDetailsId} 
+        />
       )}
-      {/* --- FIN MODIFICADO --- */}
     </Stack>
   );
 }
-

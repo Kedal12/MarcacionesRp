@@ -1,11 +1,13 @@
 import api, { storeToken } from './axios';
 
-// --- Interfaces para las respuestas de la API ---
+// ============================================================================
+// INTERFACES PARA LAS RESPUESTAS DE LA API
+// ============================================================================
+
 interface LoginResponse {
   token: string;
 }
 
-// ✅ NUEVO: Response para login mobile
 interface LoginMobileResponse {
   token: string;
   usuario: {
@@ -15,6 +17,7 @@ interface LoginMobileResponse {
     rol: string;
     numeroDocumento: string;
     sedeNombre: string | null;
+    biometriaHabilitada: boolean;
   };
 }
 
@@ -25,6 +28,28 @@ interface MeResponse {
   nombreCompleto: string;
   idSede?: number;
   sedeNombre?: string;
+  biometriaHabilitada: boolean;
+}
+
+// ✅ NUEVO: Interfaces para autenticación facial
+interface VerificarDocResponse {
+  mensaje: string;
+  userId: number;
+  nombreCompleto: string;
+}
+
+interface LoginFacialResponse {
+  token: string;
+  user: {
+    id: number;
+    nombreCompleto: string;
+    email: string;
+    rol: string;
+    numeroDocumento: string;
+    sedeNombre: string | null;
+    biometriaHabilitada: boolean;
+  };
+  confidence: number;
 }
 
 interface RegisterResponse {
@@ -40,20 +65,17 @@ interface UsuarioData {
   idSede?: number;
 }
 
+// ============================================================================
+// FUNCIONES DE AUTENTICACIÓN
+// ============================================================================
+
 /**
  * Realiza el login del usuario (web - email + password).
- * @param email - Email del usuario.
- * @param password - Contraseña del usuario.
- * @returns Respuesta con el token JWT.
  */
 export const login = async (email: string, password: string): Promise<LoginResponse> => {
   try {
     const { data } = await api.post<LoginResponse>('/api/auth/login', { email, password });
-    
-    if (data.token) {
-      await storeToken(data.token);
-    }
-    
+    if (data.token) await storeToken(data.token);
     return data;
   } catch (error: any) {
     console.error("Error en login API:", error.response?.data || error.message);
@@ -62,9 +84,43 @@ export const login = async (email: string, password: string): Promise<LoginRespo
 };
 
 /**
- * ✅ NUEVO: Realiza el login móvil solo con número de documento.
- * @param numeroDocumento - Número de documento del empleado.
- * @returns Respuesta con el token JWT y datos del usuario.
+ * ✅ NUEVO (PASO 1 FACIAL): Verifica si el documento existe y tiene biometría habilitada.
+ */
+export const verificarDocumento = async (numeroDocumento: string): Promise<VerificarDocResponse> => {
+  try {
+    const { data } = await api.post<VerificarDocResponse>('/api/auth/verificar-documento', { 
+      numeroDocumento: numeroDocumento.trim() 
+    });
+    return data;
+  } catch (error: any) {
+    console.error("Error en verificarDocumento API:", error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
+ * ✅ NUEVO (PASO 2 FACIAL): Login con reconocimiento facial enviando la captura en Base64.
+ */
+export const loginFacial = async (numeroDocumento: string, fotoBase64: string): Promise<LoginFacialResponse> => {
+  try {
+    const { data } = await api.post<LoginFacialResponse>('/api/auth/login-facial', { 
+      numeroDocumento: numeroDocumento.trim(),
+      fotoBase64 
+    });
+    
+    if (data.token) {
+      await storeToken(data.token);
+    }
+    
+    return data;
+  } catch (error: any) {
+    console.error("Error en loginFacial API:", error.response?.data || error.message);
+    throw error;
+  }
+};
+
+/**
+ * Login móvil tradicional (solo documento/password).
  */
 export const loginMobile = async (numeroDocumento: string): Promise<LoginMobileResponse> => {
   try {
@@ -85,7 +141,6 @@ export const loginMobile = async (numeroDocumento: string): Promise<LoginMobileR
 
 /**
  * Obtiene la información del usuario autenticado.
- * @returns Datos del usuario logueado.
  */
 export const me = async (): Promise<MeResponse> => {
   try {
@@ -98,9 +153,7 @@ export const me = async (): Promise<MeResponse> => {
 };
 
 /**
- * Registra un nuevo usuario.
- * @param usuarioData - Datos del usuario a registrar.
- * @returns Respuesta con mensaje e id del usuario creado.
+ * Registra un nuevo usuario (Desde panel admin).
  */
 export const register = async (usuarioData: UsuarioData): Promise<RegisterResponse> => {
   try {
@@ -114,8 +167,6 @@ export const register = async (usuarioData: UsuarioData): Promise<RegisterRespon
 
 /**
  * Cambia la contraseña del usuario autenticado.
- * @param currentPassword - Contraseña actual.
- * @param newPassword - Nueva contraseña.
  */
 export const changePassword = async (currentPassword: string, newPassword: string): Promise<void> => {
   try {

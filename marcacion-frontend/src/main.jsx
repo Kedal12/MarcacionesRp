@@ -3,26 +3,16 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider, CssBaseline, CircularProgress, Box } from "@mui/material";
 import { SnackbarProvider } from "notistack";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import theme from "./theme";
 import { AuthProvider } from "./auth/AuthContext";
+import { queryClient } from "./config/queryClient";
 
 import App from "./App";
 import ProtectedRoute from "./auth/ProtectedRoute";
 
 import "leaflet/dist/leaflet.css";
-
-// ✅ Configurar React Query
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5 * 60 * 1000, // 5 minutos
-      cacheTime: 10 * 60 * 1000, // 10 minutos
-      refetchOnWindowFocus: false,
-      retry: 1,
-    },
-  },
-});
 
 // ✅ Componente de carga
 const LoadingFallback = () => (
@@ -172,6 +162,8 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           </AuthProvider>
         </SnackbarProvider>
       </ThemeProvider>
+      {/* ✅ React Query DevTools - solo visible en desarrollo */}
+      <ReactQueryDevtools initialIsOpen={false} position="bottom-right" />
     </QueryClientProvider>
   </React.StrictMode>
 );

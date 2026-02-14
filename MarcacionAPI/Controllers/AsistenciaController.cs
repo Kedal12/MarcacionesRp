@@ -1,93 +1,84 @@
-﻿using MarcacionAPI.DTOs;
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using MarcacionAPI.DTOs;
 using MarcacionAPI.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System;
-using System.Collections.Generic;
-using System.Security.Claims; // Necesario para 'ClaimTypes'
-using System.Threading.Tasks;
 
-namespace MarcacionAPI.Controllers; // Añadido el namespace
+namespace MarcacionAPI.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
 public class AsistenciaController : ControllerBase
 {
-    private readonly IAsistenciaService _asistenciaService;
+	private readonly IAsistenciaService _asistenciaService;
 
-    public AsistenciaController(IAsistenciaService asistenciaService)
-    {
-        _asistenciaService = asistenciaService;
-    }
+	public AsistenciaController(IAsistenciaService asistenciaService)
+	{
+		_asistenciaService = asistenciaService;
+	}
 
-    /// <summary>
-    /// Analiza la asistencia de un día con lógica de compensación
-    /// </summary>
-    [HttpGet("analizar-dia")]
-    public async Task<ActionResult<AsistenciaConCompensacionDto>> AnalizarDia(
-        [FromQuery] DateTime? fecha = null)
-    {
-        try
-        {
-            var userIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (userIdStr == null) return Unauthorized();
+	[HttpGet("analizar-dia")]
+	public async Task<ActionResult<AsistenciaConCompensacionDto>> AnalizarDia([FromQuery] DateTime? fecha = null)
+	{
+		try
+		{
+			string text = base.User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value;
+			if (text == null)
+			{
+				return Unauthorized();
+			}
+			int usuarioId = int.Parse(text);
+			DateTime fecha2 = fecha ?? DateTime.Today;
+			return Ok(await _asistenciaService.AnalizarAsistenciaDia(usuarioId, fecha2));
+		}
+		catch (Exception ex)
+		{
+			return BadRequest(new
+			{
+				error = ex.Message
+			});
+		}
+	}
 
-            var userId = int.Parse(userIdStr);
-            var fechaConsulta = fecha ?? DateTime.Today;
-
-            var analisis = await _asistenciaService.AnalizarAsistenciaDia(userId, fechaConsulta);
-            return Ok(analisis);
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-    }
-
-    /// <summary>
-    /// Analiza la asistencia de un mes completo
-    /// </summary>
-    [HttpGet("analizar-mes")]
-    public async Task<ActionResult<List<AsistenciaConCompensacionDto>>> AnalizarMes(
-        [FromQuery] int? año = null,
-        [FromQuery] int? mes = null)
-    {
-        try
-        {
-            var userIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (userIdStr == null) return Unauthorized();
-
-            var userId = int.Parse(userIdStr);
-            var añoConsulta = año ?? DateTime.Now.Year;
-            var mesConsulta = mes ?? DateTime.Now.Month;
-
-            var fechaInicio = new DateTime(añoConsulta, mesConsulta, 1);
-            var fechaFin = fechaInicio.AddMonths(1).AddDays(-1);
-
-            var analisis = new List<AsistenciaConCompensacionDto>();
-
-            for (var fecha = fechaInicio; fecha <= fechaFin; fecha = fecha.AddDays(1))
-            {
-                try
-                {
-                    var dia = await _asistenciaService.AnalizarAsistenciaDia(userId, fecha);
-                    analisis.Add(dia);
-                }
-                catch
-                {
-                    // Día no laborable, sin horario asignado o sin marcaciones.
-                    // No es un error, simplemente no se añade al reporte.
-                    continue;
-                }
-            }
-
-            return Ok(analisis);
-        }
-        catch (Exception ex)
-        {
-            // Este es un error general del endpoint
-            return BadRequest(new { error = ex.Message });
-        }
-    }
+	[HttpGet("analizar-mes")]
+	public async Task<ActionResult<List<AsistenciaConCompensacionDto>>> AnalizarMes([FromQuery] int? año = null, [FromQuery] int? mes = null)
+	{
+		try
+		{
+			string text = base.User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value;
+			if (text == null)
+			{
+				return Unauthorized();
+			}
+			int userId = int.Parse(text);
+			int year = año ?? DateTime.Now.Year;
+			int month = mes ?? DateTime.Now.Month;
+			DateTime dateTime = new DateTime(year, month, 1);
+			DateTime fechaFin = dateTime.AddMonths(1).AddDays(-1.0);
+			List<AsistenciaConCompensacionDto> analisis = new List<AsistenciaConCompensacionDto>();
+			DateTime fecha = dateTime;
+			while (fecha <= fechaFin)
+			{
+				try
+				{
+					analisis.Add(await _asistenciaService.AnalizarAsistenciaDia(userId, fecha));
+				}
+				catch
+				{
+				}
+				fecha = fecha.AddDays(1.0);
+			}
+			return Ok(analisis);
+		}
+		catch (Exception ex)
+		{
+			return BadRequest(new
+			{
+				error = ex.Message
+			});
+		}
+	}
 }

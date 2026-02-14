@@ -1,315 +1,386 @@
-import { useEffect, useState } from "react";
-import { useSnackbar } from "notistack";
+// src/pages/MisCorrecciones.jsx
+import { useState, useMemo, memo, useCallback } from "react";
 import {
-  Paper, Stack, Typography, Button, IconButton, Chip, Box, Alert, CircularProgress,
-  Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip,
-  TextField, Grid, Select, MenuItem, FormControl, InputLabel
+  Paper, Stack, Typography, Button, IconButton, Chip, Box, Alert,
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
+  TextField, Grid, Select, MenuItem, FormControl, InputLabel, Skeleton,
+  Collapse, Tooltip, Fade
 } from "@mui/material";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
-import AddIcon from "@mui/icons-material/Add";
 import ReplayIcon from "@mui/icons-material/Replay";
+import SendIcon from "@mui/icons-material/Send";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import { LocalizationProvider, DatePicker, TimePicker } from "@mui/x-date-pickers";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import dayjs from "dayjs";
-import utc from 'dayjs/plugin/utc';
+import utc from "dayjs/plugin/utc";
 import { useAuth } from "../auth/AuthContext";
-import { getMisCorrecciones, crearCorreccion, borrarCorreccion } from "../api/correcciones";
-import { getUsuarios } from "../api/usuarios"; // ✅ Importar API usuarios
+import { useGestionCorrecciones } from "../hooks/useCorrecciones";
+import { useUsuariosSimple } from "../hooks/useUsuarios";
 
 dayjs.extend(utc);
 
-const formatDate = (dateOnlyString) => {
-    if (!dateOnlyString) return "-";
-    return dayjs.utc(dateOnlyString).format("DD/MM/YYYY");
+// ════════════════════════════════════════════════════════════════════════════
+// UTILIDADES
+// ════════════════════════════════════════════════════════════════════════════
+const formatDate = (date) => {
+  if (!date) return "-";
+  // Manejar tanto formato ISO como YYYY-MM-DD
+  const parsed = dayjs(date);
+  return parsed.isValid() ? parsed.format("DD/MM/YYYY") : "-";
 };
 
-const formatTime = (timeSpanString) => {
-    if (!timeSpanString || typeof timeSpanString !== 'string') return "-";
-    const parts = timeSpanString.split(':');
-    if (parts.length >= 2) {
-        return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`;
-    }
-    return "-";
+const formatTime = (time) => {
+  if (!time) return "-";
+  // Manejar formato HH:mm:ss
+  return time.split(':').slice(0, 2).join(':');
 };
 
-const getStatusColor = (status) => {
-    switch (status?.toLowerCase()) {
-        case 'aprobada': return 'success';
-        case 'rechazada': return 'error';
-        case 'pendiente': return 'warning';
-        default: return 'default';
-    }
+const getStatusConfig = (status, isOptimistic) => {
+  if (isOptimistic) {
+    return { label: "Enviando...", color: "default", variant: "outlined" };
+  }
+  const configs = {
+    aprobada: { label: "Aprobada", color: "success", variant: "filled" },
+    rechazada: { label: "Rechazada", color: "error", variant: "filled" },
+    pendiente: { label: "Pendiente", color: "warning", variant: "filled" },
+  };
+  return configs[status?.toLowerCase()] || { label: status, color: "default", variant: "filled" };
 };
 
+// ════════════════════════════════════════════════════════════════════════════
+// COMPONENTES MEMOIZADOS
+// ════════════════════════════════════════════════════════════════════════════
+
+// Skeleton para la tabla mientras carga
+const TableSkeleton = memo(({ rows = 5 }) => (
+  <>
+    {Array.from({ length: rows }).map((_, i) => (
+      <TableRow key={i}>
+        <TableCell><Skeleton animation="wave" /></TableCell>
+        <TableCell><Skeleton animation="wave" width={60} /></TableCell>
+        <TableCell><Skeleton animation="wave" width={50} /></TableCell>
+        <TableCell><Skeleton animation="wave" width={80} /></TableCell>
+        <TableCell align="right"><Skeleton animation="wave" width={40} /></TableCell>
+      </TableRow>
+    ))}
+  </>
+));
+
+// Fila de la tabla memoizada
+const CorreccionRow = memo(({ correccion, onDelete, canDelete }) => {
+  const statusConfig = getStatusConfig(correccion.estado, correccion.isOptimistic);
+  
+  return (
+    <Fade in timeout={300}>
+      <TableRow
+        hover
+        sx={{
+          opacity: correccion.isOptimistic ? 0.6 : 1,
+          transition: 'all 0.3s ease',
+          '&:hover': { backgroundColor: 'action.hover' },
+        }}
+      >
+        <TableCell>{formatDate(correccion.fecha)}</TableCell>
+        <TableCell sx={{ textTransform: 'capitalize' }}>{correccion.tipo}</TableCell>
+        <TableCell>{formatTime(correccion.horaSolicitada)}</TableCell>
+        <TableCell>
+          <Chip
+            label={statusConfig.label}
+            color={statusConfig.color}
+            size="small"
+            variant={statusConfig.variant}
+            sx={{ minWidth: 85 }}
+          />
+        </TableCell>
+        <TableCell align="right">
+          {canDelete && !correccion.isOptimistic && (
+            <Tooltip title="Eliminar solicitud">
+              <IconButton
+                color="error"
+                size="small"
+                onClick={() => onDelete(correccion.id)}
+              >
+                <DeleteForeverIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+        </TableCell>
+      </TableRow>
+    </Fade>
+  );
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// COMPONENTE PRINCIPAL
+// ════════════════════════════════════════════════════════════════════════════
 export default function MisCorrecciones() {
-  const { enqueueSnackbar } = useSnackbar();
-  const { user } = useAuth();
+const { user } = useAuth();
+  const isAdmin = useMemo(() => 
+    user?.rol === 'admin' || user?.rol === 'superadmin', 
+    [user?.rol]
+  );
+// Hook de gestión
+  const {
+    correcciones, isLoading, isFetching, error, refetch, crearAsync, isCreating, borrarAsync,
+  } = useGestionCorrecciones();
 
-  const [correcciones, setCorrecciones] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-  const [deletingId, setDeletingId] = useState(null);
+// ✅ 1. Hook de usuarios (Pasamos el idSede para que el backend filtre)
+  const { data: usuariosData, isLoading: loadingUsers } = useUsuariosSimple({ 
+    enabled: isAdmin,
+    idSede: user?.idSede 
+  });
 
-  // Estados formulario
+  const listaUsuarios = useMemo(() => {
+    if (!isAdmin || !usuariosData) return [];
+    // Normalizamos si viene como .items o array directo
+    const lista = Array.isArray(usuariosData) ? usuariosData : (usuariosData.items || []);
+    return lista.filter(u => u.activo === true);
+  }, [usuariosData, isAdmin]);
+
+// Estados del formulario
   const [fecha, setFecha] = useState(null);
   const [tipo, setTipo] = useState("entrada");
-  const [horaSolicitada, setHoraSolicitada] = useState(null);
+  const [hora, setHora] = useState(null);
   const [motivo, setMotivo] = useState("");
+  const [selectedUser, setSelectedUser] = useState("");
+  const [formExpanded, setFormExpanded] = useState(true);
 
-  // --- ✅ LÓGICA DE SELECCIÓN DE USUARIO (SOLO ADMINS) ---
-  const [usuarios, setUsuarios] = useState([]);
-  const [selectedUser, setSelectedUser] = useState(""); // ID seleccionado (string vacío = "Para mí")
-  
-  const isAdminOrSuper = user?.rol === 'admin' || user?.rol === 'superadmin';
+  // Validación del formulario
+  const isFormValid = useMemo(() => 
+    fecha && hora && motivo.trim().length > 0,
+    [fecha, hora, motivo]
+  );
 
-  // Cargar lista de usuarios solo si es admin
-  useEffect(() => {
-    if (isAdminOrSuper) {
-        getUsuarios({ page: 1, pageSize: 1000 })
-            .then(res => setUsuarios(res.items))
-            .catch(err => console.error("Error cargando usuarios", err));
-    }
-  }, [isAdminOrSuper]);
-  // ------------------------------------------------------
-
-  const loadCorrecciones = () => {
-    if (!user?.id) return;
-    setLoading(true);
-    setError(null);
-    getMisCorrecciones(user.id)
-      .then(setCorrecciones)
-      .catch(e => {
-        setError(e?.response?.data || e.message || "Error cargando tus correcciones");
-        setCorrecciones([]);
-      })
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    loadCorrecciones();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
-
-  const clearForm = () => {
-    setFecha(null);
-    setTipo("entrada");
-    setHoraSolicitada(null);
-    setMotivo("");
-    setSelectedUser(""); // Resetear selección
-  };
-
-  const handleCreate = async () => {
-    if (!fecha || !tipo || !horaSolicitada || !motivo.trim()) {
-      enqueueSnackbar("Completa todos los campos obligatorios.", { variant: "warning" });
-      return;
-    }
-
-    setSaving(true);
-    const dto = {
-        fecha: fecha,
-        tipo: tipo,
-        horaSolicitada: dayjs(horaSolicitada).format("HH:mm"),
+  // Handler de creación
+  const handleCreate = useCallback(async () => {
+    if (!isFormValid) return;
+    
+    try {
+      await crearAsync({
+        fecha: dayjs(fecha).format("YYYY-MM-DD"),
+        tipo,
+        horaSolicitada: dayjs(hora).format("HH:mm"),
         motivo: motivo.trim(),
-        // ✅ Enviar ID seleccionado (o null si es para sí mismo)
-        idUsuario: selectedUser ? Number(selectedUser) : null 
-    };
-
-    try {
-      await crearCorreccion(dto);
-      enqueueSnackbar("Solicitud de corrección enviada.", { variant: "success" });
-      clearForm();
-      loadCorrecciones();
-    } catch (e) {
-         if (e?.response?.status === 409) {
-           enqueueSnackbar(e?.response?.data || "Conflicto: Solicitud duplicada.", { variant: "error" });
-         } else {
-           enqueueSnackbar(e?.response?.data || "Error al enviar la solicitud.", { variant: "error" });
-         }
-    } finally {
-      setSaving(false);
+        idUsuario: selectedUser ? Number(selectedUser) : null,
+      });
+      // Limpiar formulario
+      setFecha(null);
+      setHora(null);
+      setMotivo("");
+      setSelectedUser("");
+    } catch {
+      // Error manejado por el hook
     }
-  };
+  }, [isFormValid, crearAsync, fecha, tipo, hora, motivo, selectedUser]);
 
-  const handleDelete = async (correccion) => {
-    if (correccion.estado !== 'pendiente' && correccion.estado !== 'rechazada') {
-        enqueueSnackbar("Solo puedes eliminar solicitudes pendientes o rechazadas.", { variant: "info" });
-        return;
-    }
-    if (!confirm(`¿Eliminar solicitud?`)) return;
+  // Handler de eliminación
+  const handleDelete = useCallback((id) => {
+    borrarAsync(id);
+  }, [borrarAsync]);
 
-    setDeletingId(correccion.id);
-    try {
-      await borrarCorreccion(correccion.id);
-      enqueueSnackbar("Solicitud eliminada.", { variant: "success" });
-      setCorrecciones(prev => prev.filter(c => c.id !== correccion.id));
-    } catch (e) {
-      enqueueSnackbar(e?.response?.data || "Error al eliminar.", { variant: "error" });
-    } finally {
-      setDeletingId(null);
-    }
-  };
+  // Determinar si se puede eliminar
+  const canDelete = useCallback((correccion) => {
+    return correccion.estado === 'pendiente' || correccion.estado === 'rechazada';
+  }, []);
 
-  return (
+return (
     <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="es">
       <Stack spacing={3}>
-        <Typography variant="h5" fontWeight={800}>Mis Solicitudes de Corrección</Typography>
+        <Typography variant="h5" fontWeight={700}>
+          {isAdmin ? "Gestión de Correcciones de Sede" : "Mis Solicitudes de Corrección"}
+        </Typography>
 
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="h6" gutterBottom>Crear Nueva Solicitud</Typography>
+        <Paper sx={{ overflow: 'hidden' }}>
+          <Box
+            sx={{
+              p: 2,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              borderBottom: formExpanded ? 1 : 0,
+              borderColor: 'divider',
+              cursor: 'pointer',
+              '&:hover': { bgcolor: 'action.hover' },
+            }}
+            onClick={() => setFormExpanded(!formExpanded)}
+          >
+            <Typography variant="subtitle1" fontWeight={600}>
+              Nueva Solicitud
+            </Typography>
+            <IconButton size="small">
+              {formExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+            </IconButton>
+          </Box>
           
-          {/* --- ✅ SELECTOR DE USUARIO (SOLO ADMINS) --- */}
-          {isAdminOrSuper && (
-             <Grid container spacing={2} sx={{ mb: 2 }}>
-                <Grid item xs={12} md={6}>
-                   <FormControl fullWidth size="small">
-                      <InputLabel id="select-user-label">Solicitar Para (Dejar vacío si es para mí)</InputLabel>
+          <Collapse in={formExpanded}>
+            <Box sx={{ p: 2 }}>
+              <Grid container spacing={2} alignItems="center">
+                {isAdmin && (
+                  <Grid item xs={12}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Solicitar Para (Empleado de mi Sede)</InputLabel>
                       <Select
-                         labelId="select-user-label"
-                         value={selectedUser}
-                         label="Solicitar Para (Dejar vacío si es para mí)"
-                         onChange={(e) => setSelectedUser(e.target.value)}
-                         disabled={saving}
+                        value={selectedUser}
+                        label="Solicitar Para (Empleado de mi Sede)"
+                        onChange={(e) => setSelectedUser(e.target.value)}
+                        disabled={loadingUsers} // ✅ Deshabilitar mientras carga
                       >
-                         <MenuItem value=""><em>-- Para mí mismo --</em></MenuItem>
-                         {usuarios.map(u => (
-                            <MenuItem key={u.id} value={u.id}>
-                               {u.nombreCompleto} ({u.email})
-                            </MenuItem>
-                         ))}
+                        <MenuItem value="">
+                          <em>— Para mí mismo —</em>
+                        </MenuItem>
+                        {/* ✅ Ahora listaUsuarios está definida */}
+                        {listaUsuarios.map((u) => (
+                          <MenuItem key={u.id} value={u.id}>
+                            {u.nombreCompleto} ({u.numeroDocumento})
+                          </MenuItem>
+                        ))}
                       </Select>
-                   </FormControl>
+                      {loadingUsers && <Typography variant="caption">Cargando empleados...</Typography>}
+                    </FormControl>
+                  </Grid>
+                )}
+                
+                {/* Fecha */}
+                <Grid item xs={6} sm={3} md={2}>
+                  <DatePicker
+                    label="Fecha *"
+                    value={fecha}
+                    onChange={setFecha}
+                    maxDate={dayjs()}
+                    slotProps={{
+                      textField: { size: 'small', fullWidth: true },
+                    }}
+                  />
                 </Grid>
-             </Grid>
-          )}
-          {/* ------------------------------------------- */}
 
-          <Grid container spacing={2} alignItems="center">
-            <Grid item xs={6} sm={3} md={2}>
-              <DatePicker
-                label="Fecha *"
-                value={fecha}
-                onChange={setFecha}
-                slotProps={{ textField: { fullWidth: true, size: 'small' } }}
-                disableFuture
-                disabled={saving}
-                maxDate={dayjs()}
-              />
-            </Grid>
-            <Grid item xs={6} sm={3} md={2}>
-                <FormControl fullWidth size="small">
-                    <InputLabel id="tipo-correccion-label">Tipo *</InputLabel>
+                {/* Tipo */}
+                <Grid item xs={6} sm={3} md={2}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Tipo *</InputLabel>
                     <Select
-                        labelId="tipo-correccion-label"
-                        value={tipo}
-                        label="Tipo *"
-                        onChange={(e) => setTipo(e.target.value)}
-                        disabled={saving}
+                      value={tipo}
+                      label="Tipo *"
+                      onChange={(e) => setTipo(e.target.value)}
                     >
-                        <MenuItem value="entrada">Entrada</MenuItem>
-                        <MenuItem value="salida">Salida</MenuItem>
+                      <MenuItem value="entrada">Entrada</MenuItem>
+                      <MenuItem value="salida">Salida</MenuItem>
                     </Select>
-               </FormControl>
-            </Grid>
-             <Grid item xs={6} sm={3} md={2}>
-                <TimePicker
-                    label="Hora Solicitada *"
-                    value={horaSolicitada}
-                    onChange={setHoraSolicitada}
-                    slotProps={{ textField: { fullWidth: true, size: 'small' } }}
+                  </FormControl>
+                </Grid>
+
+                {/* Hora */}
+                <Grid item xs={6} sm={3} md={2}>
+                  <TimePicker
+                    label="Hora *"
+                    value={hora}
+                    onChange={setHora}
                     ampm={false}
-                    disabled={saving}
-                 />
-            </Grid>
-            <Grid item xs={12} sm={9} md={4}>
-              <TextField
-                label="Motivo / Justificación *"
-                value={motivo}
-                onChange={(e) => setMotivo(e.target.value)}
-                fullWidth
-                size="small"
-                multiline
-                rows={1}
-                disabled={saving}
-              />
-            </Grid>
-            <Grid item xs={12} sm={3} md={2}>
-              <Button
-                variant="contained"
-                onClick={handleCreate}
-                disabled={saving || !fecha || !tipo || !horaSolicitada || !motivo.trim() || loading}
-                startIcon={saving ? <CircularProgress size={20} color="inherit"/> : <AddIcon />}
-                fullWidth
-              >
-                Enviar
-              </Button>
-            </Grid>
-          </Grid>
-           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-               Si eres administrador, usa el selector superior para crear una solicitud a nombre de otro empleado.
-           </Typography>
+                    slotProps={{
+                      textField: { size: 'small', fullWidth: true },
+                    }}
+                  />
+                </Grid>
+
+                {/* Motivo */}
+                <Grid item xs={12} sm={9} md={4}>
+                  <TextField
+                    label="Motivo *"
+                    value={motivo}
+                    onChange={(e) => setMotivo(e.target.value)}
+                    fullWidth
+                    size="small"
+                    placeholder="Ej: Olvidé marcar entrada"
+                  />
+                </Grid>
+
+                {/* Botón enviar */}
+                <Grid item xs={12} sm={3} md={2}>
+                  <Button
+                    variant="contained"
+                    onClick={handleCreate}
+                    disabled={isCreating || !isFormValid}
+                    fullWidth
+                    startIcon={<SendIcon />}
+                    sx={{ height: 40 }}
+                  >
+                    {isCreating ? "Enviando..." : "Enviar"}
+                  </Button>
+                </Grid>
+              </Grid>
+            </Box>
+          </Collapse>
         </Paper>
 
-        {/* Lista de Correcciones */}
+        {/* Tabla de solicitudes */}
         <Paper>
-           <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-             <Typography variant="h6">Mis Solicitudes</Typography>
-             <Tooltip title="Refrescar Lista">
-                 <span>
-                    <IconButton onClick={loadCorrecciones} disabled={loading}>
-                        <ReplayIcon />
-                    </IconButton>
-                 </span>
-             </Tooltip>
-           </Stack>
+          <Box sx={{ p: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="h6">
+              Historial de Solicitudes
+              {correcciones.length > 0 && (
+                <Chip
+                  label={correcciones.length}
+                  size="small"
+                  sx={{ ml: 1, fontSize: '0.75rem' }}
+                />
+              )}
+            </Typography>
+            <Tooltip title="Actualizar">
+              <IconButton
+                onClick={() => refetch()}
+                disabled={isFetching}
+                sx={{
+                  animation: isFetching ? 'spin 1s linear infinite' : 'none',
+                  '@keyframes spin': {
+                    '0%': { transform: 'rotate(0deg)' },
+                    '100%': { transform: 'rotate(360deg)' },
+                  },
+                }}
+              >
+                <ReplayIcon />
+              </IconButton>
+            </Tooltip>
+          </Box>
 
-          {error && <Alert severity="error" sx={{ m: 2 }}>{String(error)}</Alert>}
+          {error && (
+            <Alert severity="error" sx={{ mx: 2, mb: 2 }}>
+              {error?.message || "Error al cargar solicitudes"}
+            </Alert>
+          )}
 
           <TableContainer>
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell>Fecha</TableCell>
-                  <TableCell>Tipo</TableCell>
-                  <TableCell>Hora Solicitada</TableCell>
-                  <TableCell>Motivo</TableCell>
-                  <TableCell>Estado</TableCell>
-                  <TableCell>Solicitado El</TableCell>
-                  <TableCell align="right">Acciones</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Fecha</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Tipo</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Hora</TableCell>
+                  <TableCell sx={{ fontWeight: 600 }}>Estado</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 600 }}>Acciones</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {loading && <TableRow><TableCell colSpan={7} align="center" sx={{ py: 4 }}><CircularProgress /></TableCell></TableRow>}
-                {!loading && correcciones.length === 0 && <TableRow><TableCell colSpan={7} align="center" sx={{ py: 4, color: "text.secondary" }}>No tienes solicitudes de corrección.</TableCell></TableRow>}
-                {!loading && correcciones.map((c) => (
-                  <TableRow key={c.id} hover>
-                    <TableCell>{formatDate(c.fecha)}</TableCell>
-                    <TableCell sx={{ textTransform: 'capitalize' }}>{c.tipo}</TableCell>
-                    <TableCell>{formatTime(c.horaSolicitada)}</TableCell>
-                     <TableCell>
-                      <Tooltip title={c.motivo || ""}>
-                        <Typography variant="body2" noWrap sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                           {c.motivo || "-"}
-                        </Typography>
-                      </Tooltip>
-                    </TableCell>
-                    <TableCell>
-                      <Chip label={c.estado} color={getStatusColor(c.estado)} size="small" sx={{ textTransform: 'capitalize' }} />
-                    </TableCell>
-                    <TableCell>{dayjs(c.createdAt).format("DD/MM/YYYY HH:mm")}</TableCell>
-                    <TableCell align="right">
-                      {(c.estado === 'pendiente' || c.estado === 'rechazada') && (
-                        <Tooltip title="Eliminar Solicitud">
-                          <span>
-                            <IconButton size="small" color="error" onClick={() => handleDelete(c)} disabled={deletingId === c.id}>
-                              {deletingId === c.id ? <CircularProgress size={20} color="inherit"/> : <DeleteForeverIcon fontSize="small"/>}
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                      )}
+                {isLoading ? (
+                  <TableSkeleton rows={5} />
+                ) : correcciones.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} align="center" sx={{ py: 4 }}>
+                      <Typography color="text.secondary">
+                        No tienes solicitudes de corrección
+                      </Typography>
                     </TableCell>
                   </TableRow>
-                ))}
+                ) : (
+                  correcciones.map((c) => (
+                    <CorreccionRow
+                      key={c.id}
+                      correccion={c}
+                      onDelete={handleDelete}
+                      canDelete={canDelete(c)}
+                    />
+                  ))
+                )}
               </TableBody>
             </Table>
           </TableContainer>

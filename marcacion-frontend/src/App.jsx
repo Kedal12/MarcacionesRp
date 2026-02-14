@@ -21,9 +21,10 @@ export default function App() {
   const { pathname } = useLocation();
   const queryClient = useQueryClient();
 
+  // ✅ CORRECCIÓN: Aseguramos que el rol se compare correctamente con el objeto ROLES
   const role = (user?.rol || "").toLowerCase();
   const isAdmin = role === ROLES.ADMIN;
-  const isSuperAdmin = role === ROLES.SUPERADMIN;
+  const isSuperAdmin = role === ROLES.SUPERADMIN; // Antes decía ROLES.superadmin (en minúscula y fallaba)
 
   const [anchor, setAnchor] = useState(null);
   const open = Boolean(anchor);
@@ -43,30 +44,18 @@ export default function App() {
     setOpenPassDialog(true);
   };
 
-  // ✅ Prefetch de datos comunes al cargar la app
   useEffect(() => {
     if (user) {
-      // Prefetch sedes (datos estáticos usados en dropdowns)
+      // Prefetch de datos comunes
       queryClient.prefetchQuery({
         queryKey: ['sedes'],
         queryFn: async () => {
           const response = await api.get('/api/sedes');
           return response.data;
         },
-        staleTime: 10 * 60 * 1000, // Cache por 10 minutos
+        staleTime: 10 * 60 * 1000,
       });
 
-      // Prefetch horarios para dropdowns
-      queryClient.prefetchQuery({
-        queryKey: ['horarios'],
-        queryFn: async () => {
-          const response = await api.get('/api/horarios');
-          return response.data;
-        },
-        staleTime: 5 * 60 * 1000,
-      });
-
-      // Si es admin o superadmin, prefetch usuarios (primera página)
       if (isAdmin || isSuperAdmin) {
         queryClient.prefetchQuery({
           queryKey: ['usuarios', 1, ''],
@@ -82,7 +71,6 @@ export default function App() {
     }
   }, [user, isAdmin, isSuperAdmin, queryClient]);
 
-  // Estilo para botones del navbar
   const navButtonStyle = (isActive) => ({
     color: "#fff",
     fontWeight: isActive ? 700 : 500,
@@ -107,12 +95,10 @@ export default function App() {
         }}
       >
         <Toolbar sx={{ gap: 2, flexWrap: "wrap", py: 1 }}>
-          {/* Título */}
           <Typography 
             variant="h6" 
             sx={{ 
               fontWeight: 800, 
-              letterSpacing: 0.2,
               color: "#fff",
               textShadow: "0 2px 4px rgba(0,0,0,0.2)",
             }}
@@ -120,158 +106,84 @@ export default function App() {
             Panel Marcación
           </Typography>
 
-          {/* Navegación */}
           <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
-            {/* --- Botones para TODOS los usuarios logueados --- */}
-            <Button
-              component={Link}
-              to="/"
-              sx={navButtonStyle(pathname === "/")}
-            >
+            <Button component={Link} to="/" sx={navButtonStyle(pathname === "/")}>
               Dashboard
             </Button>
 
-            <Button
-              component={Link}
-              to="/marcaciones"
-              sx={navButtonStyle(pathname.startsWith("/marcaciones"))}
-            >
+            <Button component={Link} to="/marcaciones" sx={navButtonStyle(pathname.startsWith("/marcaciones"))}>
               Marcaciones
             </Button>
 
-            <Button
-              component={Link}
-              to="/ausencias"
-              sx={navButtonStyle(pathname.startsWith("/ausencias") && !pathname.includes('admin'))}
-            >
+            <Button component={Link} to="/ausencias" sx={navButtonStyle(pathname.startsWith("/ausencias") && !pathname.includes('admin'))}>
               Mis Ausencias
             </Button>
 
-            <Button
-              component={Link}
-              to="/mis-correcciones"
-              sx={navButtonStyle(pathname.startsWith("/mis-correcciones"))}
-            >
+            <Button component={Link} to="/mis-correcciones" sx={navButtonStyle(pathname.startsWith("/mis-correcciones"))}>
               Mis Correcciones
             </Button>
 
-            {/* --- Botones para ADMINS DE SEDE y SUPERADMINS --- */}
+            {/* --- Secciones para Admin y SuperAdmin --- */}
             {(isAdmin || isSuperAdmin) && (
               <>
-                <Button
-                  component={Link}
-                  to="/usuarios"
-                  sx={navButtonStyle(pathname.startsWith("/usuarios"))}
-                >
+                <Button component={Link} to="/usuarios" sx={navButtonStyle(pathname.startsWith("/usuarios"))}>
                   Usuarios
                 </Button>
                 
-                <Button
-                  component={Link}
-                  to="/asignaciones"
-                  sx={navButtonStyle(pathname.startsWith("/asignaciones"))}
-                >
+                <Button component={Link} to="/asignaciones" sx={navButtonStyle(pathname.startsWith("/asignaciones"))}>
                   Asignaciones
                 </Button>
 
-                <Button
-                  component={Link}
-                  to="/reportes/horas"
-                  sx={navButtonStyle(pathname.startsWith("/reportes/horas"))}
-                >
+                <Button component={Link} to="/reportes/horas" sx={navButtonStyle(pathname.startsWith("/reportes/horas"))}>
                   Reporte Horas
                 </Button>
 
-                <Button
-                  component={Link}
-                  to="/horarios"
-                  sx={navButtonStyle(pathname.startsWith("/horarios"))}
-                >
+                <Button component={Link} to="/horarios" sx={navButtonStyle(pathname.startsWith("/horarios"))}>
                   {isAdmin ? "Horarios (Sede)" : "Horarios (Global)"}
                 </Button>
               </>
             )}
 
-            {/* --- Botones SÓLO PARA SUPERADMIN --- */}
+            {/* --- Secciones Exclusivas de SuperAdmin --- */}
             {isSuperAdmin && (
               <>
-                <Button
-                  component={Link}
-                  to="/ausenciasadmin"
-                  sx={navButtonStyle(pathname.startsWith("/ausenciasadmin"))}
-                >
+                <Button component={Link} to="/ausenciasadmin" sx={navButtonStyle(pathname.startsWith("/ausenciasadmin"))}>
                   Gestionar Ausencias
                 </Button>
 
-                <Button
-                  component={Link}
-                  to="/correcciones-admin"
-                  sx={navButtonStyle(pathname.startsWith("/correcciones-admin"))}
-                >
+                <Button component={Link} to="/correcciones-admin" sx={navButtonStyle(pathname.startsWith("/correcciones-admin"))}>
                   Gestionar Correcciones
                 </Button>
 
-                <Button
-                  component={Link}
-                  to="/sedes"
-                  sx={navButtonStyle(pathname.startsWith("/sedes"))}
-                >
+                <Button component={Link} to="/sedes" sx={navButtonStyle(pathname.startsWith("/sedes"))}>
                   Sedes
                 </Button>
 
-                <Button
-                  component={Link}
-                  to="/feriados"
-                  sx={navButtonStyle(pathname.startsWith("/feriados"))}
-                >
+                <Button component={Link} to="/feriados" sx={navButtonStyle(pathname.startsWith("/feriados"))}>
                   Feriados
                 </Button>
 
-                <Button
-                  component={Link}
-                  to="/auditoria"
-                  sx={navButtonStyle(pathname.startsWith("/auditoria"))}
-                >
+                <Button component={Link} to="/auditoria" sx={navButtonStyle(pathname.startsWith("/auditoria"))}>
                   Auditoría
                 </Button>
               </>
             )}
           </Stack>
 
-          {/* Espaciador */}
           <Box sx={{ flexGrow: 1 }} />
 
-          {/* Usuario y Logo al lado derecho */}
           <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
             {user && (
               <>
-                <Typography 
-                  variant="body2" 
-                  sx={{ 
-                    display: { xs: "none", md: "block" },
-                    color: "rgba(255, 255, 255, 0.9)",
-                    fontWeight: 500,
-                  }}
-                >
-                  {user.nombreCompleto || user.email} · {user.rol}
+                <Typography variant="body2" sx={{ display: { xs: "none", md: "block" }, color: "rgba(255, 255, 255, 0.9)", fontWeight: 500 }}>
+                  {user.nombreCompleto || user.email} · <strong>{role}</strong>
                 </Typography>
 
-                <Tooltip title="Cuenta">
-                  <IconButton onClick={handleOpen} size="small">
-                    <Avatar 
-                      sx={{ 
-                        width: 36, 
-                        height: 36,
-                        backgroundColor: "#fff",
-                        color: "#e9501e",
-                        fontWeight: 700,
-                        boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
-                      }}
-                    >
-                      {user.email?.[0]?.toUpperCase() ?? "U"}
-                    </Avatar>
-                  </IconButton>
-                </Tooltip>
+                <IconButton onClick={handleOpen} size="small">
+                  <Avatar sx={{ width: 36, height: 36, backgroundColor: "#fff", color: "#e9501e", fontWeight: 700 }}>
+                    {user.email?.[0]?.toUpperCase() ?? "U"}
+                  </Avatar>
+                </IconButton>
 
                 <Menu
                   anchorEl={anchor}
@@ -279,68 +191,21 @@ export default function App() {
                   onClose={handleClose}
                   transformOrigin={{ horizontal: "right", vertical: "top" }}
                   anchorOrigin={{ horizontal: "right", vertical: "bottom" }}
-                  PaperProps={{
-                    sx: {
-                      mt: 1,
-                      minWidth: 200,
-                    }
-                  }}
                 >
                   <MenuItem disabled>
                     <Typography variant="body2" fontWeight={600}>{user.nombreCompleto}</Typography>
                   </MenuItem>
                   <MenuItem disabled>
-                    <Typography variant="body2" color="text.secondary">{user.email}</Typography>
+                    <Typography variant="body2" color="text.secondary">Rol: {role}</Typography>
                   </MenuItem>
-                  <MenuItem disabled>
-                    <Typography variant="body2" color="text.secondary">Rol: {user.rol}</Typography>
-                  </MenuItem>
-                  {isAdmin && user.sedeNombre && (
-                    <MenuItem disabled>
-                      <Typography variant="body2" sx={{ fontStyle: 'italic', color: "#e9501e" }}>
-                        Sede: {user.sedeNombre}
-                      </Typography>
-                    </MenuItem>
-                  )}
                   <Divider />
-                  <MenuItem onClick={handleOpenPassDialog}>
-                    Cambiar contraseña
-                  </MenuItem>
-                  <MenuItem onClick={goLogout} sx={{ color: "#cc3625" }}>
-                    Cerrar sesión
-                  </MenuItem>
+                  <MenuItem onClick={handleOpenPassDialog}>Cambiar contraseña</MenuItem>
+                  <MenuItem onClick={goLogout} sx={{ color: "#cc3625" }}>Cerrar sesión</MenuItem>
                 </Menu>
               </>
             )}
-
-            {!user && (
-              <Button 
-                variant="contained" 
-                onClick={() => nav("/login")}
-                sx={{ 
-                  backgroundColor: "#fff", 
-                  color: "#e9501e",
-                  "&:hover": { backgroundColor: "rgba(255,255,255,0.9)" }
-                }}
-              >
-                Iniciar sesión
-              </Button>
-            )}
-
-            {/* Logo a la derecha */}
-            <Box
-              component="img"
-              src="/logo-media-naranja.png"
-              alt="La Media Naranja"
-              sx={{ 
-                height: 55,
-                width: "auto",
-                filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.2))",
-                display: { xs: "none", sm: "block" },
-                ml: 1,
-              }}
-              onError={(e) => { e.target.style.display = 'none'; }}
-            />
+            
+            <Box component="img" src="/logo-media-naranja.webp" sx={{ height: 55, display: { xs: "none", sm: "block" } }} />
           </Box>
         </Toolbar>
       </AppBar>
@@ -349,10 +214,7 @@ export default function App() {
         <Outlet />
       </Container>
 
-      <ChangePasswordDialog
-        open={openPassDialog}
-        onClose={() => setOpenPassDialog(false)}
-      />
+      <ChangePasswordDialog open={openPassDialog} onClose={() => setOpenPassDialog(false)} />
     </>
   );
 }

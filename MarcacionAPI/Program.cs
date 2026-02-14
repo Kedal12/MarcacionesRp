@@ -1,56 +1,31 @@
-锘縰sing MarcacionAPI.Data;
+using System.Text;
+using MarcacionAPI.Data;
+using MarcacionAPI.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
-using System.Security.Claims;
-using System.Text;
-using MarcacionAPI.Services;
+using System.IO.Compression;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.ResponseCompression;
-using System.IO.Compression;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Escuchar en todas las interfaces, puerto 5000
-builder.WebHost.UseUrls("http://0.0.0.0:5000");
+// Configuraci髇 de URL (Sincronizada con el servidor)
+builder.WebHost.UseUrls("http://0.0.0.0:5005");
 
-// --- Configuraci贸n de Servicios ---
-
-// 1) DbContext
+// 1. Base de Datos
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// 2) CORS: Pol铆tica "PermitirTodo" para que React conecte sin problemas
-builder.Services.AddCors(options =>
-{
-    options.AddPolicy("PermitirTodo", policy =>
-    {
-        policy.AllowAnyOrigin()   // Permite cualquier IP (React, Celular, etc.)
-              .AllowAnyHeader()
-              .AllowAnyMethod();
-    });
-});
-
-// 2.1) Compresi贸n de respuestas
-builder.Services.AddResponseCompression(options =>
-{
-    options.EnableForHttps = true;
-    options.Providers.Add<GzipCompressionProvider>();
-});
-
-builder.Services.Configure<GzipCompressionProviderOptions>(options =>
-{
-    options.Level = CompressionLevel.Fastest;
-});
-
-// 2.2) Inyecci贸n de dependencias
+// 2. Servicios de l骻ica de negocio
 builder.Services.AddScoped<IAsistenciaService, AsistenciaService>();
 builder.Services.AddScoped<IResumenService, ResumenService>();
+builder.Services.AddScoped<IRecargosService, RecargosService>();
+builder.Services.AddScoped<IFaceRecognitionService, ViewFaceCoreService>();
 
-// 3) Auth JWT
+// 3. Autenticaci髇 JWT (Validando contra tu appsettings local 10.15.0.221)
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -62,25 +37,31 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuerSigningKey = true,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(
-                    builder.Configuration["Jwt:Key"]
-                    ?? throw new InvalidOperationException("JWT Key not configured")
-                )
-            ),
-            RoleClaimType = ClaimTypes.Role
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key not configured"))),
+            RoleClaimType = "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"
         };
     });
 
-builder.Logging.AddConsole();
+// 4. Otros servicios (CORS, Compresi髇, Rate Limiting)
+builder.Services.AddCors(options => options.AddPolicy("PermitirTodo", policy => policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
-// 4) Autorizaci贸n
-builder.Services.AddAuthorization();
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<GzipCompressionProvider>();
+});
 
-// 5) Controllers
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("loginPolicy", opt =>
+    {
+        opt.PermitLimit = 5;
+        opt.Window = TimeSpan.FromMinutes(1);
+    });
+    options.RejectionStatusCode = 429;
+});
+
 builder.Services.AddControllers();
-
-// 6) Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -90,57 +71,26 @@ builder.Services.AddSwaggerGen(c =>
         Type = SecuritySchemeType.Http,
         Scheme = "bearer",
         BearerFormat = "JWT",
-        Description = "Introduce tu token JWT (con o sin prefijo 'Bearer ')."
+        Description = "Introduce tu token JWT."
     });
     c.AddSecurityRequirement(new OpenApiSecurityRequirement {
-     {
-       new OpenApiSecurityScheme {
-         Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
-       },
-       Array.Empty<string>()
-     }
+        { new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } }, Array.Empty<string>() }
     });
 });
 
-// 7) Rate Limiter
-builder.Services.AddRateLimiter(options =>
-{
-    options.AddFixedWindowLimiter(policyName: "loginPolicy", opt =>
-    {
-        opt.PermitLimit = 5;
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 0;
-    });
-    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-});
-
-// --- Construcci贸n de la App ---
 var app = builder.Build();
 
-// --- Pipeline HTTP (ORDEN CORRECTO) ---
-
-// 鈿狅笍 CAMBIO IMPORTANTE: Swagger fuera del "if Development" para verlo en IIS
+// 5. Pipeline de ejecuci髇
 app.UseSwagger();
 app.UseSwaggerUI();
 
-// 1. Compresi贸n
 app.UseResponseCompression();
-
-// 2. CORS (Vital: Debe ir antes de Routing y Auth)
 app.UseCors("PermitirTodo");
-
-// 3. Routing
 app.UseRouting();
-
-// 4. Rate Limiter
 app.UseRateLimiter();
-
-// 5. Autenticaci贸n y Autorizaci贸n
 app.UseAuthentication();
 app.UseAuthorization();
 
-// 6. Controllers
 app.MapControllers();
 
 app.Run();

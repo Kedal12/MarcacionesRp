@@ -1,6 +1,6 @@
-﻿namespace MarcacionAPI.DTOs;
+namespace MarcacionAPI.DTOs;
 
 public class CambiarEstadoDto
 {
-    public bool Activo { get; set; }
+	public bool Activo { get; set; }
 }

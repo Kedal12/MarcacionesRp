@@ -1,18 +1,19 @@
-﻿using MarcacionAPI.Data;
+using System;
+using System.Linq;
+using System.Text.Json;
+using System.Threading.Tasks;
+using MarcacionAPI.Data;
+using MarcacionAPI.DTOs;
 using MarcacionAPI.Models;
-using MarcacionAPI.DTOs.Horarios;
 using MarcacionAPI.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Claims;
-using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace MarcacionAPI.Controllers;
 
-public record FeriadoDto(string Nombre, bool Laborable = false);
-
-[Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
+[Authorize(Roles = "admin,superadmin")]
 [ApiController]
 [Route("api/[controller]")]
 public class FeriadosController : ControllerBase
@@ -26,9 +27,6 @@ public class FeriadosController : ControllerBase
         _logger = logger;
     }
 
-    // ============================================================
-    // GET /api/feriados?year=YYYY
-    // ============================================================
     [HttpGet]
     public async Task<IActionResult> Get([FromQuery] int? year)
     {
@@ -39,23 +37,17 @@ public class FeriadosController : ControllerBase
             query = query.Where(f => f.Fecha.Year == year.Value);
         }
 
-        var feriados = await query
-            .OrderBy(f => f.Fecha)
-            .ToListAsync();
-
+        var feriados = await query.OrderBy(f => f.Fecha).ToListAsync();
         return Ok(feriados);
     }
 
-    // ============================================================
-    // POST /api/feriados/{fecha}
-    // ============================================================
     [HttpPost("{fecha}")]
-    [Authorize(Roles = Roles.SuperAdmin)]
+    [Authorize(Roles = "superadmin")]
     public async Task<IActionResult> CreateOrUpdate(string fecha, [FromBody] FeriadoDto dto)
     {
         try
         {
-            if (!DateOnly.TryParse(fecha, out DateOnly fechaParsed))
+            if (!DateOnly.TryParse(fecha, out var fechaParsed))
             {
                 return BadRequest("Formato de fecha inválido. Use YYYY-MM-DD.");
             }
@@ -66,58 +58,59 @@ public class FeriadosController : ControllerBase
             }
 
             var idAdmin = User.GetUserId();
-            if (idAdmin is null)
+            if (!idAdmin.HasValue)
+            {
                 return Unauthorized();
+            }
 
             var existente = await _context.Feriados
                 .FirstOrDefaultAsync(f => f.Fecha == fechaParsed);
 
-            string accionAuditoria;
-
+            string accion;
             if (existente != null)
             {
-                // Actualizar
                 existente.Nombre = dto.Nombre.Trim();
                 existente.Laborable = dto.Laborable;
-                accionAuditoria = "feriado.update";
-
+                accion = "feriado.update";
                 _logger.LogInformation("Feriado actualizado: {Fecha}", fechaParsed);
             }
             else
             {
-                // Crear
-                var nuevoFeriado = new Feriado
+                var feriado = new Feriado
                 {
                     Fecha = fechaParsed,
                     Nombre = dto.Nombre.Trim(),
                     Laborable = dto.Laborable
                 };
-                _context.Feriados.Add(nuevoFeriado);
-                accionAuditoria = "feriado.create";
-
+                _context.Feriados.Add(feriado);
+                accion = "feriado.create";
                 _logger.LogInformation("Feriado creado: {Fecha} - {Nombre}", fechaParsed, dto.Nombre);
             }
 
-            // Auditoría
             _context.Auditorias.Add(new Auditoria
             {
                 IdUsuarioAdmin = idAdmin.Value,
-                Accion = accionAuditoria,
+                Accion = accion,
                 Entidad = "Feriado",
                 EntidadId = fechaParsed.DayNumber,
                 DataJson = JsonSerializer.Serialize(new
                 {
                     fecha = fechaParsed.ToString("yyyy-MM-dd"),
-                    dto.Nombre,
-                    dto.Laborable
+                    Nombre = dto.Nombre,
+                    Laborable = dto.Laborable
                 })
             });
 
             await _context.SaveChangesAsync();
 
-            return existente == null
-                ? CreatedAtAction(nameof(Get), new { year = fechaParsed.Year }, new { fecha = fechaParsed })
-                : NoContent();
+            if (existente != null)
+            {
+                return NoContent();
+            }
+            else
+            {
+                return CreatedAtAction(nameof(Get), new { year = fechaParsed.Year }, new { fecha = fechaParsed });
+            }
         }
         catch (Exception ex)
         {
@@ -130,16 +123,13 @@ public class FeriadosController : ControllerBase
         }
     }
 
-    // ============================================================
-    // DELETE /api/feriados/{fecha}
-    // ============================================================
     [HttpDelete("{fecha}")]
-    [Authorize(Roles = Roles.SuperAdmin)]
+    [Authorize(Roles = "superadmin")]
     public async Task<IActionResult> Delete(string fecha)
     {
         try
         {
-            if (!DateOnly.TryParse(fecha, out DateOnly fechaParsed))
+            if (!DateOnly.TryParse(fecha, out var fechaParsed))
             {
                 return BadRequest("Formato de fecha inválido. Use YYYY-MM-DD.");
             }
@@ -152,23 +142,23 @@ public class FeriadosController : ControllerBase
                 return NotFound("No se encontró un feriado para esa fecha.");
             }
 
-            var idAdmin = User.GetUserId();
-            if (idAdmin is null)
+            var userId = User.GetUserId();
+            if (!userId.HasValue)
+            {
                 return Unauthorized();
+            }
 
             var feriadoData = new
             {
                 fecha = fechaParsed.ToString("yyyy-MM-dd"),
-                feriado.Nombre,
-                feriado.Laborable
+                Nombre = feriado.Nombre,
+                Laborable = feriado.Laborable
             };
 
             _context.Feriados.Remove(feriado);
-
-            // Auditoría
             _context.Auditorias.Add(new Auditoria
             {
-                IdUsuarioAdmin = idAdmin.Value,
+                IdUsuarioAdmin = userId.Value,
                 Accion = "feriado.delete",
                 Entidad = "Feriado",
                 EntidadId = fechaParsed.DayNumber,
@@ -178,7 +168,6 @@ public class FeriadosController : ControllerBase
             await _context.SaveChangesAsync();
 
             _logger.LogWarning("Feriado eliminado: {Fecha} - {Nombre}", fechaParsed, feriado.Nombre);
-
             return NoContent();
         }
         catch (Exception ex)

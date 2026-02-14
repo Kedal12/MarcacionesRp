@@ -1,25 +1,27 @@
+// src/api/ausencias.js
 import api from "./axios";
 import dayjs from "dayjs";
 
 /**
- * Crea una nueva solicitud de ausencia.
- * @param {object} dto - Datos de la ausencia.
- * @param {number} [dto.idUsuario] - ID del usuario (opcional, para admins creando para otros).
- * @param {string} dto.tipo - Tipo de ausencia ("vacaciones", "enfermedad", etc.).
- * @param {DateOnly|dayjs|string} dto.desde - Fecha de inicio.
- * @param {DateOnly|dayjs|string} dto.hasta - Fecha de fin.
- * @param {string} [dto.observacion] - Motivo opcional.
- * @returns {Promise<object>} - Promesa con la ausencia creada.
+ * ════════════════════════════════════════════════════════════════════════════
+ * API DE AUSENCIAS - Optimizada
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+
+/**
+ * Crea una nueva solicitud de ausencia
+ * @param {object} dto - Datos de la ausencia
+ * @returns {Promise<object>} - Ausencia creada
  */
 export const crearAusencia = async (dto) => {
   const payload = {
     tipo: dto.tipo,
     desde: dayjs(dto.desde).format("YYYY-MM-DD"),
     hasta: dayjs(dto.hasta).format("YYYY-MM-DD"),
-    observacion: dto.observacion,
+    observacion: dto.observacion?.trim() || null,
   };
 
-  // ✅ NUEVO: Si se especifica un usuario, incluirlo en el payload
+  // Si admin crea para otro usuario
   if (dto.idUsuario && dto.idUsuario > 0) {
     payload.idUsuario = dto.idUsuario;
   }
@@ -29,23 +31,25 @@ export const crearAusencia = async (dto) => {
 };
 
 /**
- * Lista las ausencias según filtros (Admin).
- * @param {object} filtro - Filtros opcionales.
- * @param {number} [filtro.idUsuario]
- * @param {number} [filtro.idSede]
- * @param {DateOnly|dayjs|string} [filtro.desde]
- * @param {DateOnly|dayjs|string} [filtro.hasta]
- * @param {string} [filtro.estado] - "pendiente", "aprobada", "rechazada".
- * @returns {Promise<Array<object>>} - Promesa con la lista de ausencias.
+ * ✅ NUEVO: Obtiene las ausencias del usuario logueado
+ * Usa el endpoint dedicado /mis-solicitudes (requiere agregarlo al backend)
+ * @returns {Promise<Array>}
+ */
+export const getMisAusencias = async () => {
+  const { data } = await api.get('/api/ausencias/mis-solicitudes');
+  return data;
+};
+
+/**
+ * Lista ausencias con filtros (Admin)
+ * @param {object} filtro - Filtros opcionales
+ * @returns {Promise<Array>}
  */
 export const listarAusencias = async (filtro = {}) => {
   const params = { ...filtro };
-  if (filtro.desde) {
-    params.desde = dayjs(filtro.desde).format("YYYY-MM-DD");
-  }
-  if (filtro.hasta) {
-    params.hasta = dayjs(filtro.hasta).format("YYYY-MM-DD");
-  }
+  
+  if (filtro.desde) params.desde = dayjs(filtro.desde).format("YYYY-MM-DD");
+  if (filtro.hasta) params.hasta = dayjs(filtro.hasta).format("YYYY-MM-DD");
   if (isNaN(parseInt(params.idUsuario)) || params.idUsuario <= 0) delete params.idUsuario;
   if (isNaN(parseInt(params.idSede)) || params.idSede <= 0) delete params.idSede;
 
@@ -54,22 +58,8 @@ export const listarAusencias = async (filtro = {}) => {
 };
 
 /**
- * Obtiene las ausencias del usuario actualmente logueado.
- * @param {number} idUsuarioLogueado - El ID del usuario que está consultando.
- * @returns {Promise<Array<object>>} - Promesa con la lista de ausencias del usuario.
- */
-export const getMisAusencias = async (idUsuarioLogueado) => {
-  if (!idUsuarioLogueado || isNaN(parseInt(idUsuarioLogueado))) {
-    console.warn("getMisAusencias requiere un idUsuarioLogueado válido.");
-    return Promise.resolve([]);
-  }
-  const data = await listarAusencias({ idUsuario: idUsuarioLogueado });
-  return data;
-};
-
-/**
- * ✅ NUEVO: Obtiene la lista de usuarios de la sede del admin (para el selector).
- * @returns {Promise<Array<{id: number, nombreCompleto: string, numeroDocumento: string}>>}
+ * Obtiene usuarios de la sede del admin (para selector)
+ * @returns {Promise<Array<{id, nombreCompleto, numeroDocumento}>>}
  */
 export const getUsuariosSede = async () => {
   const { data } = await api.get("/api/ausencias/usuarios-sede");
@@ -77,27 +67,24 @@ export const getUsuariosSede = async () => {
 };
 
 /**
- * Aprueba una solicitud de ausencia (Admin).
- * @param {number} id - ID de la ausencia.
- * @returns {Promise<void>}
+ * Aprueba una ausencia (Admin)
+ * @param {number} id - ID de la ausencia
  */
 export const aprobarAusencia = async (id) => {
   await api.put(`/api/ausencias/${id}/aprobar`);
 };
 
 /**
- * Rechaza una solicitud de ausencia (Admin).
- * @param {number} id - ID de la ausencia.
- * @returns {Promise<void>}
+ * Rechaza una ausencia (Admin)
+ * @param {number} id - ID de la ausencia
  */
 export const rechazarAusencia = async (id) => {
   await api.put(`/api/ausencias/${id}/rechazar`);
 };
 
 /**
- * Elimina una solicitud de ausencia.
- * @param {number} id - ID de la ausencia a eliminar.
- * @returns {Promise<void>}
+ * Elimina una ausencia
+ * @param {number} id - ID de la ausencia
  */
 export const borrarAusencia = async (id) => {
   await api.delete(`/api/ausencias/${id}`);

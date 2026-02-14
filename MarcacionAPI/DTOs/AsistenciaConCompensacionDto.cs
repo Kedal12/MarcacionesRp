@@ -1,37 +1,31 @@
-﻿namespace MarcacionAPI.DTOs;
+﻿using System;
+
+namespace MarcacionAPI.DTOs;
 
 public class AsistenciaConCompensacionDto
 {
     public DateTime Fecha { get; set; }
-    public string DiaSemana { get; set; }
-
-    // Horario esperado
+    public string DiaSemana { get; set; } = string.Empty; // ✅ Valor por defecto
     public TimeSpan HoraEntradaEsperada { get; set; }
-
     public TimeSpan HoraSalidaEsperada { get; set; }
-
-    // Marcaciones reales
     public TimeSpan? HoraEntradaReal { get; set; }
-
     public TimeSpan? HoraSalidaReal { get; set; }
-
-    // Cálculos
     public TimeSpan MinutosTarde { get; set; }
-
     public TimeSpan MinutosExtra { get; set; }
     public TimeSpan HorasTrabajadas { get; set; }
     public TimeSpan HorasEsperadas { get; set; }
     public TimeSpan DiferenciaHoras { get; set; }
-
-    // Compensación
     public bool PermiteCompensacion { get; set; }
-
     public bool TardanzaCompensada { get; set; }
-    public TimeSpan TardanzaNeta { get; set; }  // Tardanza después de compensar
-    public TimeSpan TiempoExtraNeto { get; set; }  // Extra después de compensar
+    public TimeSpan TardanzaNeta { get; set; }
+    public TimeSpan TiempoExtraNeto { get; set; }
+    public string Estado { get; set; } = string.Empty; // ✅ Valor por defecto
+    public string Mensaje { get; set; } = string.Empty; // ✅ Valor por defecto
 
-    // Estado final
-    public string Estado { get; set; }  // "PUNTUAL", "TARDE", "COMPENSADO"
+    // Recargos según Ley 2466 de 2025
+    public double HorasExtraDiurnas { get; set; }
 
-    public string Mensaje { get; set; }
+    public double HorasExtraNocturnas { get; set; }
+    public double HorasRecargoNocturnoOrdinario { get; set; }
+    public double TotalRecargos => HorasExtraDiurnas + HorasExtraNocturnas + HorasRecargoNocturnoOrdinario;
 }

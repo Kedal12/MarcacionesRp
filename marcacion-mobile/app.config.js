@@ -91,7 +91,7 @@ export default {
     },
 
     extra: {
-        apiUrl: 'http://10.15.1.11:5000',     
+        apiUrl: 'http://10.15.0.221:5005',     
         eas: {
         projectId: "d095ba94-d018-4dfc-bee2-adf6b7e6c1c6"
       }

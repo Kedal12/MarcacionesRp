@@ -46,3 +46,14 @@ export async function changePassword(currentPassword, newPassword) {
   });
   return data;
 }
+/** * Registra la foto de perfil y genera el embedding facial
+ * @param {string} fotoBase64 - Imagen en base64 sin prefijo
+ * @param {number|null} idUsuario - ID del usuario (opcional si es el propio)
+ */
+export async function registrarFotoPerfil(fotoBase64, idUsuario = null) {
+  const { data } = await api.post("/api/auth/registrar-foto-perfil", {
+    fotoBase64,
+    idUsuario
+  });
+  return data;
+}

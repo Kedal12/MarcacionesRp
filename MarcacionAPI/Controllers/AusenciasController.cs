@@ -1,19 +1,27 @@
-﻿using MarcacionAPI.Data;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Security.Claims;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using MarcacionAPI.Data;
 using MarcacionAPI.DTOs.Ausencias;
 using MarcacionAPI.Models;
 using MarcacionAPI.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System;
-using System.Linq;
-using System.Security.Claims;
-using System.Threading.Tasks;
-using System.Text.Json;
 
 namespace MarcacionAPI.Controllers;
 
-[Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
+/// <summary>
+/// Controlador de Ausencias
+/// NOTA: El atributo de clase permite admin/superadmin, pero algunos endpoints
+/// tienen [Authorize] propio para permitir acceso a usuarios normales.
+/// </summary>
+[Authorize(Roles = "admin,superadmin")]
 [ApiController]
 [Route("api/[controller]")]
 public class AusenciasController : ControllerBase
@@ -25,59 +33,93 @@ public class AusenciasController : ControllerBase
         _context = context;
     }
 
-    // POST /api/ausencias
+    // ════════════════════════════════════════════════════════════════════════════
+    // ✅ NUEVO ENDPOINT: Mis Solicitudes (para usuarios normales)
+    // ════════════════════════════════════════════════════════════════════════════
+
     /// <summary>
-    /// Crea una nueva solicitud de ausencia (siempre queda en estado PENDIENTE).
-    /// - Empleado: Solo puede crear para sí mismo
-    /// - Admin: Puede crear para usuarios de su sede
-    /// - SuperAdmin: Puede crear para cualquier usuario
-    /// Todas las ausencias requieren aprobación de RRHH.
+    /// Obtiene las solicitudes de ausencia del usuario actualmente logueado.
+    /// NO requiere rol admin - cualquier usuario autenticado puede ver sus propias ausencias.
     /// </summary>
+    [HttpGet("mis-solicitudes")]
+    [Authorize] // Sobrescribe el rol de clase - solo requiere autenticación
+    public async Task<IActionResult> GetMisSolicitudes()
+    {
+        var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+        {
+            return Unauthorized("No se pudo identificar al usuario.");
+        }
+
+        var ausencias = await _context.Ausencias
+            .AsNoTracking()
+            .Where(a => a.IdUsuario == userId)
+            .OrderByDescending(a => a.CreatedAt)
+            .Select(a => new
+            {
+                id = a.Id,
+                tipo = a.Tipo,
+                desde = a.Desde.ToString("yyyy-MM-dd"),
+                hasta = a.Hasta.ToString("yyyy-MM-dd"),
+                observacion = a.Observacion,
+                estado = a.Estado,
+                createdAt = a.CreatedAt
+            })
+            .ToListAsync();
+
+        return Ok(ausencias);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // Crear Ausencia
+    // ════════════════════════════════════════════════════════════════════════════
+
     [HttpPost]
-    [Authorize]
+    [Authorize] // Sobrescribe - cualquier usuario puede crear su propia ausencia
     public async Task<IActionResult> CrearAusencia([FromBody] AusenciaCrearDto dto)
     {
-        var idUsuarioLogueado = User.GetUserId();
-        if (idUsuarioLogueado is null)
+        int? idUsuarioLogueado = User.GetUserId();
+        if (!idUsuarioLogueado.HasValue)
         {
             return Unauthorized();
         }
 
-        // Validación básica
-        if (string.IsNullOrWhiteSpace(dto.Tipo)) return BadRequest("El tipo de ausencia es requerido.");
-        if (dto.Hasta < dto.Desde) return BadRequest("La fecha 'Hasta' no puede ser anterior a 'Desde'.");
+        if (string.IsNullOrWhiteSpace(dto.Tipo))
+        {
+            return BadRequest("El tipo de ausencia es requerido.");
+        }
 
-        // Determinar para quién es la ausencia
-        int idUsuarioDestino;
+        if (dto.Hasta < dto.Desde)
+        {
+            return BadRequest("La fecha 'Hasta' no puede ser anterior a 'Desde'.");
+        }
+
         bool esParaOtroUsuario = false;
+        int idUsuarioDestino;
 
         if (dto.IdUsuario.HasValue && dto.IdUsuario.Value > 0 && dto.IdUsuario.Value != idUsuarioLogueado.Value)
         {
-            // Admin/SuperAdmin creando ausencia para OTRO usuario
             esParaOtroUsuario = true;
             idUsuarioDestino = dto.IdUsuario.Value;
 
-            // Verificar permisos
-            if (!User.IsInRole(Roles.Admin) && !User.IsSuperAdmin())
+            if (!User.IsInRole("admin") && !User.IsSuperAdmin())
             {
                 return Forbid("Solo administradores pueden crear ausencias para otros usuarios.");
             }
 
-            // Verificar que el usuario destino existe y está activo
-            var usuarioDestino = await _context.Usuarios
+            var usuario = await _context.Usuarios
                 .AsNoTracking()
                 .FirstOrDefaultAsync(u => u.Id == idUsuarioDestino && u.Activo);
 
-            if (usuarioDestino == null)
+            if (usuario == null)
             {
                 return NotFound("El usuario especificado no existe o está inactivo.");
             }
 
-            // Si es Admin (no SuperAdmin), verificar que el usuario sea de su sede
             if (!User.IsSuperAdmin())
             {
-                var sedeIdAdmin = User.GetSedeId() ?? 0;
-                if (usuarioDestino.IdSede != sedeIdAdmin)
+                int sedeAdmin = User.GetSedeId().GetValueOrDefault();
+                if (usuario.IdSede != sedeAdmin)
                 {
                     return Forbid("No puedes crear ausencias para usuarios de otra sede.");
                 }
@@ -85,22 +127,21 @@ public class AusenciasController : ControllerBase
         }
         else
         {
-            // Usuario creando ausencia para SÍ MISMO
             idUsuarioDestino = idUsuarioLogueado.Value;
         }
 
-        // Validar solapamiento con otras ausencias del usuario destino
-        var overlap = await _context.Ausencias.AnyAsync(a =>
-            a.IdUsuario == idUsuarioDestino &&
-            a.Estado != EstadoAusencia.Rechazada &&
-            !((a.Hasta < dto.Desde) || (a.Desde > dto.Hasta)));
+        // Verificar solapamiento
+        bool existeSolapamiento = await _context.Ausencias
+            .AnyAsync(a =>
+                a.IdUsuario == idUsuarioDestino &&
+                a.Estado != "rechazada" &&
+                !(a.Hasta < dto.Desde || a.Desde > dto.Hasta));
 
-        if (overlap)
+        if (existeSolapamiento)
         {
             return Conflict("Ya existe una solicitud de ausencia (pendiente o aprobada) que se solapa con las fechas indicadas.");
         }
 
-        // ✅ SIEMPRE queda en estado PENDIENTE - requiere aprobación de RRHH
         var nuevaAusencia = new Ausencia
         {
             IdUsuario = idUsuarioDestino,
@@ -108,14 +149,13 @@ public class AusenciasController : ControllerBase
             Desde = dto.Desde,
             Hasta = dto.Hasta,
             Observacion = dto.Observacion?.Trim(),
-            Estado = EstadoAusencia.Pendiente, // Siempre pendiente
+            Estado = "pendiente",
             CreatedAt = DateTimeOffset.UtcNow,
             CreatedBy = idUsuarioLogueado.Value
         };
 
         _context.Ausencias.Add(nuevaAusencia);
 
-        // --- Auditoría ---
         _context.Auditorias.Add(new Auditoria
         {
             IdUsuarioAdmin = idUsuarioLogueado.Value,
@@ -125,35 +165,44 @@ public class AusenciasController : ControllerBase
             DataJson = JsonSerializer.Serialize(new
             {
                 IdUsuarioDestino = idUsuarioDestino,
-                dto.Tipo,
-                dto.Desde,
-                dto.Hasta,
-                dto.Observacion
+                Tipo = dto.Tipo,
+                Desde = dto.Desde,
+                Hasta = dto.Hasta,
+                Observacion = dto.Observacion
             })
         });
-        // --- Fin Auditoría ---
 
         await _context.SaveChangesAsync();
+
         return CreatedAtAction(nameof(GetAusenciaById), new { id = nuevaAusencia.Id }, nuevaAusencia);
     }
 
-    // GET /api/ausencias/{id}
+    // ════════════════════════════════════════════════════════════════════════════
+    // Obtener Ausencia por ID
+    // ════════════════════════════════════════════════════════════════════════════
+
     [HttpGet("{id:int}")]
     [Authorize]
     public async Task<IActionResult> GetAusenciaById(int id)
     {
-        var idUsuarioLogueado = User.GetUserId();
-        if (idUsuarioLogueado is null) return Unauthorized();
+        int? idUsuarioLogueado = User.GetUserId();
+        if (!idUsuarioLogueado.HasValue)
+        {
+            return Unauthorized();
+        }
 
-        var query = _context.Ausencias.AsNoTracking()
-                                      .Include(a => a.Usuario)
-                                      .Where(a => a.Id == id);
+        var query = _context.Ausencias
+            .AsNoTracking()
+            .Include(a => a.Usuario)
+                .ThenInclude(u => u.Sede) // ← incluir Sede (nuevo)
+            .Where(a => a.Id == id);
 
+        // Filtrar según rol
         if (!User.IsSuperAdmin())
         {
-            if (User.IsInRole(Roles.Admin))
+            if (User.IsInRole("admin"))
             {
-                var sedeIdAdmin = User.GetSedeId() ?? 0;
+                int sedeIdAdmin = User.GetSedeId().GetValueOrDefault();
                 query = query.Where(a => a.Usuario != null && a.Usuario.IdSede == sedeIdAdmin);
             }
             else
@@ -162,106 +211,117 @@ public class AusenciasController : ControllerBase
             }
         }
 
-        var ausenciaDto = await query.Select(a => new AusenciaListadoDto(
-                                          a.Id,
-                                          a.IdUsuario,
-                                          a.Usuario != null ? a.Usuario.NombreCompleto : "N/A",
-                                          a.Tipo,
-                                          a.Desde,
-                                          a.Hasta,
-                                          a.Observacion,
-                                          a.Estado,
-                                          a.CreatedAt,
-                                          null
-                                      ))
-                                      .FirstOrDefaultAsync();
+        var ausencia = await query
+            .Select(a => new AusenciaListadoDto(
+                a.Id,                                              // Id
+                a.IdUsuario,                                       // IdUsuario
+                a.Usuario != null ? a.Usuario.NombreCompleto : "N/A", // NombreUsuario
+                a.Tipo,                                            // Tipo
+                a.Desde,                                           // Desde
+                a.Hasta,                                           // Hasta
+                a.Observacion,                                     // Observacion
+                a.Estado,                                          // Estado
+                a.CreatedAt,                                       // CreatedAt
+                null,                                              // NombreAprobador
+                (a.Usuario != null && a.Usuario.Sede != null ? (int?)a.Usuario.Sede.Id : null),
+                (a.Usuario != null && a.Usuario.Sede != null ? a.Usuario.Sede.Nombre : null)
+            ))
+            .FirstOrDefaultAsync();
 
-        return ausenciaDto == null ? NotFound("No se encontró la ausencia o no tienes permisos para verla.") : Ok(ausenciaDto);
+        if (ausencia == null)
+        {
+            return NotFound("No se encontró la ausencia o no tienes permisos para verla.");
+        }
+
+        return Ok(ausencia);
     }
 
-    // GET /api/ausencias
+    // ════════════════════════════════════════════════════════════════════════════
+    // Listar Ausencias (Admin)
+    // ════════════════════════════════════════════════════════════════════════════
+
     [HttpGet]
-    [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
+    [Authorize(Roles = "admin,superadmin")]
     public async Task<IActionResult> ListarAusencias([FromQuery] AusenciaFiltroDto filtro)
     {
-        var query = _context.Ausencias.AsNoTracking()
-                             .Include(a => a.Usuario)
-                             .AsQueryable();
+        var query = _context.Ausencias
+            .AsNoTracking()
+            .Include(a => a.Usuario)
+                .ThenInclude(u => u.Sede) // ← incluir Sede
+            .AsQueryable();
 
-        var sedeIdFiltrada = filtro.IdSede;
-        var idUsuarioFiltrado = filtro.IdUsuario;
+        int? sedeIdFiltrada = filtro.IdSede;
+        int? idUsuarioFiltrado = filtro.IdUsuario;
 
         if (!User.IsSuperAdmin())
         {
-            sedeIdFiltrada = User.GetSedeId() ?? 0;
+            sedeIdFiltrada = User.GetSedeId().GetValueOrDefault();
 
             if (idUsuarioFiltrado.HasValue && idUsuarioFiltrado.Value > 0)
             {
-                var usuarioSede = await _context.Usuarios.AsNoTracking()
-                                        .Where(u => u.Id == idUsuarioFiltrado.Value)
-                                        .Select(u => u.IdSede)
-                                        .FirstOrDefaultAsync();
-                if (usuarioSede == 0 || usuarioSede != sedeIdFiltrada)
-                {
+                var sedeUsuario = await _context.Usuarios
+                    .AsNoTracking()
+                    .Where(u => u.Id == idUsuarioFiltrado.Value)
+                    .Select(u => u.IdSede)
+                    .FirstOrDefaultAsync();
+
+                if (sedeUsuario == 0 || sedeUsuario != sedeIdFiltrada)
                     return Forbid("No puedes ver ausencias de usuarios de otra sede.");
-                }
             }
         }
 
         if (idUsuarioFiltrado.HasValue && idUsuarioFiltrado > 0)
-        {
             query = query.Where(a => a.IdUsuario == idUsuarioFiltrado.Value);
-        }
 
         if (sedeIdFiltrada.HasValue && sedeIdFiltrada > 0)
-        {
             query = query.Where(a => a.Usuario != null && a.Usuario.IdSede == sedeIdFiltrada.Value);
-        }
 
         if (!string.IsNullOrWhiteSpace(filtro.Estado))
-        {
             query = query.Where(a => a.Estado == filtro.Estado.ToLower());
-        }
+
         if (filtro.Desde.HasValue)
-        {
             query = query.Where(a => a.Hasta >= filtro.Desde.Value);
-        }
+
         if (filtro.Hasta.HasValue)
-        {
             query = query.Where(a => a.Desde <= filtro.Hasta.Value);
-        }
 
-        var ausencias = await query
-                                .OrderByDescending(a => a.CreatedAt)
-                                .Select(a => new AusenciaListadoDto(
-                                    a.Id,
-                                    a.IdUsuario,
-                                    a.Usuario != null ? a.Usuario.NombreCompleto : "N/A",
-                                    a.Tipo,
-                                    a.Desde,
-                                    a.Hasta,
-                                    a.Observacion,
-                                    a.Estado,
-                                    a.CreatedAt,
-                                    null
-                                ))
-                                .ToListAsync();
+        var resultado = await query
+            .OrderByDescending(a => a.CreatedAt)
+            .Select(a => new AusenciaListadoDto(
+                a.Id,                                  // Id
+                a.IdUsuario,                           // IdUsuario
+                a.Usuario != null ? a.Usuario.NombreCompleto : "N/A", // NombreUsuario
+                a.Tipo,                                // Tipo
+                a.Desde,                               // Desde
+                a.Hasta,                               // Hasta
+                a.Observacion,                         // Observacion
+                a.Estado,                              // Estado
+                a.CreatedAt,                           // CreatedAt
+                null,                                  // NombreAprobador
+                (a.Usuario != null && a.Usuario.Sede != null ? (int?)a.Usuario.Sede.Id : null), // SedeId
+                (a.Usuario != null && a.Usuario.Sede != null ? a.Usuario.Sede.Nombre : null)    // SedeNombre
+            ))
+            .ToListAsync();
 
-        return Ok(ausencias);
+        return Ok(resultado);
     }
 
-    // GET /api/ausencias/usuarios-sede
+    // ════════════════════════════════════════════════════════════════════════════
+    // Usuarios de la Sede (para selector)
+    // ════════════════════════════════════════════════════════════════════════════
+
     [HttpGet("usuarios-sede")]
-    [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
+    [Authorize(Roles = "admin,superadmin")]
     public async Task<IActionResult> GetUsuariosSede()
     {
-        var query = _context.Usuarios.AsNoTracking()
-                            .Where(u => u.Activo)
-                            .AsQueryable();
+        var query = _context.Usuarios
+            .AsNoTracking()
+            .Where(u => u.Activo)
+            .AsQueryable();
 
         if (!User.IsSuperAdmin())
         {
-            var sedeId = User.GetSedeId() ?? 0;
+            int sedeId = User.GetSedeId().GetValueOrDefault();
             query = query.Where(u => u.IdSede == sedeId);
         }
 
@@ -278,124 +338,172 @@ public class AusenciasController : ControllerBase
         return Ok(usuarios);
     }
 
-    // PUT /api/ausencias/{id}/aprobar
+    // ════════════════════════════════════════════════════════════════════════════
+    // Aprobar Ausencia (Admin)
+    // ════════════════════════════════════════════════════════════════════════════
+
     [HttpPut("{id:int}/aprobar")]
-    [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
+    [Authorize(Roles = "admin,superadmin")]
     public async Task<IActionResult> AprobarAusencia(int id)
     {
         var ausencia = await _context.Ausencias
-                                  .Include(a => a.Usuario)
-                                  .FirstOrDefaultAsync(a => a.Id == id);
-        if (ausencia == null) return NotFound();
-        if (ausencia.Estado != EstadoAusencia.Pendiente)
-            return BadRequest($"La solicitud ya está en estado '{ausencia.Estado}'.");
+            .Include(a => a.Usuario)
+            .FirstOrDefaultAsync(a => a.Id == id);
 
-        var idAdmin = User.GetUserId();
-        if (idAdmin is null) return Unauthorized("No se pudo identificar al administrador.");
+        if (ausencia == null)
+        {
+            return NotFound();
+        }
+
+        if (ausencia.Estado != "pendiente")
+        {
+            return BadRequest($"La solicitud ya está en estado '{ausencia.Estado}'.");
+        }
+
+        int? userId = User.GetUserId();
+        if (!userId.HasValue)
+        {
+            return Unauthorized("No se pudo identificar al administrador.");
+        }
 
         if (!User.IsSuperAdmin())
         {
-            var sedeIdAdmin = User.GetSedeId() ?? 0;
-            if (ausencia.Usuario == null || ausencia.Usuario.IdSede != sedeIdAdmin)
+            int sedeAdmin = User.GetSedeId().GetValueOrDefault();
+            if (ausencia.Usuario == null || ausencia.Usuario.IdSede != sedeAdmin)
             {
                 return Forbid("No puedes aprobar solicitudes de usuarios de otra sede.");
             }
         }
 
-        ausencia.Estado = EstadoAusencia.Aprobada;
+        ausencia.Estado = "aprobada";
         ausencia.ApprovedAt = DateTimeOffset.UtcNow;
-        ausencia.ApprovedBy = idAdmin.Value;
+        ausencia.ApprovedBy = userId.Value;
 
         _context.Auditorias.Add(new Auditoria
         {
-            IdUsuarioAdmin = idAdmin.Value,
+            IdUsuarioAdmin = userId.Value,
             Accion = "ausencia.approve",
             Entidad = "Ausencia",
             EntidadId = ausencia.Id,
-            DataJson = JsonSerializer.Serialize(new { ausencia.IdUsuario, ausencia.Tipo, ausencia.Desde, ausencia.Hasta })
+            DataJson = JsonSerializer.Serialize(new
+            {
+                ausencia.IdUsuario,
+                ausencia.Tipo,
+                ausencia.Desde,
+                ausencia.Hasta
+            })
         });
 
         await _context.SaveChangesAsync();
+
         return NoContent();
     }
 
-    // PUT /api/ausencias/{id}/rechazar
+    // ════════════════════════════════════════════════════════════════════════════
+    // Rechazar Ausencia (Admin)
+    // ════════════════════════════════════════════════════════════════════════════
+
     [HttpPut("{id:int}/rechazar")]
-    [Authorize(Roles = $"{Roles.Admin},{Roles.SuperAdmin}")]
+    [Authorize(Roles = "admin,superadmin")]
     public async Task<IActionResult> RechazarAusencia(int id)
     {
         var ausencia = await _context.Ausencias
-                                  .Include(a => a.Usuario)
-                                  .FirstOrDefaultAsync(a => a.Id == id);
-        if (ausencia == null) return NotFound();
-        if (ausencia.Estado != EstadoAusencia.Pendiente)
-            return BadRequest($"La solicitud ya está en estado '{ausencia.Estado}'.");
+            .Include(a => a.Usuario)
+            .FirstOrDefaultAsync(a => a.Id == id);
 
-        var idAdmin = User.GetUserId();
-        if (idAdmin is null) return Unauthorized("No se pudo identificar al administrador.");
+        if (ausencia == null)
+        {
+            return NotFound();
+        }
+
+        if (ausencia.Estado != "pendiente")
+        {
+            return BadRequest($"La solicitud ya está en estado '{ausencia.Estado}'.");
+        }
+
+        int? userId = User.GetUserId();
+        if (!userId.HasValue)
+        {
+            return Unauthorized("No se pudo identificar al administrador.");
+        }
 
         if (!User.IsSuperAdmin())
         {
-            var sedeIdAdmin = User.GetSedeId() ?? 0;
-            if (ausencia.Usuario == null || ausencia.Usuario.IdSede != sedeIdAdmin)
+            int sedeAdmin = User.GetSedeId().GetValueOrDefault();
+            if (ausencia.Usuario == null || ausencia.Usuario.IdSede != sedeAdmin)
             {
                 return Forbid("No puedes rechazar solicitudes de usuarios de otra sede.");
             }
         }
 
-        ausencia.Estado = EstadoAusencia.Rechazada;
+        ausencia.Estado = "rechazada";
         ausencia.ApprovedAt = DateTimeOffset.UtcNow;
-        ausencia.ApprovedBy = idAdmin.Value;
+        ausencia.ApprovedBy = userId.Value;
 
         _context.Auditorias.Add(new Auditoria
         {
-            IdUsuarioAdmin = idAdmin.Value,
+            IdUsuarioAdmin = userId.Value,
             Accion = "ausencia.reject",
             Entidad = "Ausencia",
             EntidadId = ausencia.Id,
-            DataJson = JsonSerializer.Serialize(new { ausencia.IdUsuario, ausencia.Tipo, ausencia.Desde, ausencia.Hasta })
+            DataJson = JsonSerializer.Serialize(new
+            {
+                ausencia.IdUsuario,
+                ausencia.Tipo,
+                ausencia.Desde,
+                ausencia.Hasta
+            })
         });
 
         await _context.SaveChangesAsync();
+
         return NoContent();
     }
 
-    // DELETE /api/ausencias/{id}
+    // ════════════════════════════════════════════════════════════════════════════
+    // Borrar Ausencia
+    // ════════════════════════════════════════════════════════════════════════════
+
     [HttpDelete("{id:int}")]
     [Authorize]
     public async Task<IActionResult> BorrarAusencia(int id)
     {
         var ausencia = await _context.Ausencias
-                                 .Include(a => a.Usuario)
-                                 .FirstOrDefaultAsync(x => x.Id == id);
-        if (ausencia is null) return NotFound();
+            .Include(a => a.Usuario)
+            .FirstOrDefaultAsync(a => a.Id == id);
 
-        var idUsuarioLogueado = User.GetUserId();
-        if (idUsuarioLogueado is null) return Unauthorized();
+        if (ausencia == null)
+        {
+            return NotFound();
+        }
 
-        bool tienePermiso = false;
+        int? userId = User.GetUserId();
+        if (!userId.HasValue)
+        {
+            return Unauthorized();
+        }
+
+        bool puedeEliminar = false;
 
         if (User.IsSuperAdmin())
         {
-            tienePermiso = true;
+            puedeEliminar = true;
         }
-        else if (User.IsInRole(Roles.Admin))
+        else if (User.IsInRole("admin"))
         {
-            var sedeIdAdmin = User.GetSedeId() ?? 0;
-            if (ausencia.Usuario != null && ausencia.Usuario.IdSede == sedeIdAdmin)
+            int sedeAdmin = User.GetSedeId().GetValueOrDefault();
+            if (ausencia.Usuario != null && ausencia.Usuario.IdSede == sedeAdmin)
             {
-                tienePermiso = true;
+                puedeEliminar = true;
             }
         }
-        else
+        else if (ausencia.IdUsuario == userId &&
+                (ausencia.Estado == "pendiente" || ausencia.Estado == "rechazada"))
         {
-            if (ausencia.IdUsuario == idUsuarioLogueado && (ausencia.Estado == EstadoAusencia.Pendiente || ausencia.Estado == EstadoAusencia.Rechazada))
-            {
-                tienePermiso = true;
-            }
+            puedeEliminar = true;
         }
 
-        if (!tienePermiso)
+        if (!puedeEliminar)
         {
             return Forbid("No tienes permisos para borrar esta solicitud.");
         }
@@ -404,14 +512,22 @@ public class AusenciasController : ControllerBase
 
         _context.Auditorias.Add(new Auditoria
         {
-            IdUsuarioAdmin = idUsuarioLogueado.Value,
+            IdUsuarioAdmin = userId.Value,
             Accion = "ausencia.delete",
             Entidad = "Ausencia",
             EntidadId = id,
-            DataJson = JsonSerializer.Serialize(new { ausencia.IdUsuario, ausencia.Tipo, ausencia.Desde, ausencia.Hasta, ausencia.Estado })
+            DataJson = JsonSerializer.Serialize(new
+            {
+                ausencia.IdUsuario,
+                ausencia.Tipo,
+                ausencia.Desde,
+                ausencia.Hasta,
+                ausencia.Estado
+            })
         });
 
         await _context.SaveChangesAsync();
+
         return NoContent();
     }
 }

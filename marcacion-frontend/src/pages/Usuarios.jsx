@@ -1,726 +1,305 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useSnackbar } from "notistack";
 import {
-  getUsuarios,
-  crearUsuario,
-  actualizarUsuario,
-  cambiarEstadoUsuario,
-  eliminarUsuario,
-  resetPassword,
-} from "../api/usuarios";
-import { getSedes } from "../api/sedes";
-import api from "../api/axios"; // ✅ Importar axios para el export Excel
-import FileDownloadIcon from "@mui/icons-material/FileDownload";
-import ReplayIcon from "@mui/icons-material/Replay";
-import {
-  Typography,
-  Paper,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  TablePagination,
-  Stack,
-  Box,
-  TextField,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
-  Chip,
-  CircularProgress,
-  Alert,
-  Button,
-  IconButton,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Grid,
-  Tooltip,
-  InputAdornment,
+  Typography, Paper, Table, TableBody, TableCell, TableContainer,
+  TableHead, TableRow, TablePagination, Stack, Box, TextField,
+  Select, MenuItem, Chip, CircularProgress, Button, IconButton, 
+  Tooltip, InputAdornment, Dialog, DialogTitle, DialogContent, 
+  DialogActions, Grid, FormControl, InputLabel,
+  // ✅ AGREGAR ESTAS DOS IMPORTACIONES QUE FALTABAN:
+  FormControlLabel, Switch 
 } from "@mui/material";
-import AddIcon from "@mui/icons-material/Add";
-import EditIcon from "@mui/icons-material/Edit";
-import CheckCircleIcon from "@mui/icons-material/CheckCircle";
-import BlockIcon from "@mui/icons-material/Block";
-import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
-import KeyIcon from "@mui/icons-material/Key";
-import VisibilityIcon from "@mui/icons-material/Visibility";
-import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
+
+// Iconos
+import {
+  Add as AddIcon, Edit as EditIcon, DeleteForever as DeleteIcon,
+  VpnKey as KeyIcon, PhotoCamera as PhotoIcon, Refresh as RefreshIcon,
+  Visibility as VisibilityIcon, VisibilityOff as VisibilityOffIcon,
+  HelpOutline as HelpOutlineIcon, FileUpload as FileUploadIcon
+} from "@mui/icons-material";
+
+// Hooks y API
+import { useUsuarios, useUsuariosMutation, useEliminarUsuario, useResetPassword } from "../hooks/useUsuarios"; 
+import { useSedesAll } from "../hooks/useSedes";
 import { useAuth } from "../auth/AuthContext";
+import { useDebounce } from "../hooks/useDebounce"; 
+import { registrarFotoPerfil } from "../api/auth"; 
+import { crearUsuario, actualizarUsuario, importarUsuarios } from "../api/usuarios";
 
-const ROLES = {
-  SUPERADMIN: "superadmin",
-  ADMIN: "admin",
-  EMPLEADO: "empleado"
-};
-
-export default function Usuarios() {
-  const { user } = useAuth();
-  const isSuperAdmin = useMemo(() => user?.rol === ROLES.SUPERADMIN, [user]);
-
-  const [data, setData] = useState({ items: [], total: 0, page: 1, pageSize: 10 });
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(10);
-
-  const [sedes, setSedes] = useState([]); 
-  const [idSede, setIdSede] = useState(""); 
-  const [search, setSearch] = useState("");
-
-  const [loading, setLoading] = useState(false);
-  const [loadingSedes, setLoadingSedes] = useState(false); 
-  const [err, setErr] = useState(null);
-  const [exporting, setExporting] = useState(false);
-  const [deletingId, setDeletingId] = useState(null);
-
-  const [openNew, setOpenNew] = useState(false);
-  const [openEdit, setOpenEdit] = useState(false);
-  const [editing, setEditing] = useState(null);
-
-  const [resetOpen, setResetOpen] = useState(false);
-  const [pendingUser, setPendingUser] = useState(null);
-  const [newPass, setNewPass] = useState("");
-  const [showPass, setShowPass] = useState(false);
-  const [resetting, setResetting] = useState(false);
-
-  const [fNombre, setFNombre] = useState("");
-  const [fEmail, setFEmail] = useState("");
-  const [fPassword, setFPassword] = useState("");
-  const [fTipoDoc, setFTipoDoc] = useState("CC");
-  const [fNumDoc, setFNumDoc] = useState("");
-  const [fRol, setFRol] = useState("empleado"); 
-  const [fSede, setFSede] = useState(""); 
-
-  const [eNombre, setENombre] = useState("");
-  const [eRol, setERol] = useState("empleado");
-  const [eSede, setESede] = useState("");
-  const [eActivo, setEActivo] = useState(true);
-  const [eTipoDoc, setETipoDoc] = useState("CC");
-  const [eNumDoc, setENumDoc] = useState("");
-
+const Usuarios = () => {
   const { enqueueSnackbar } = useSnackbar();
+  const { user: currentUser } = useAuth();
+  const isSuperAdmin = useMemo(() => currentUser?.rol === "superadmin", [currentUser]);
 
-  // ✅ NUEVO: Exportar a Excel (en lugar de CSV)
-  async function exportExcel() {
+  // 1. Estados de filtros y paginación
+  const [page, setPage] = useState(0);
+  // ✅ CAMBIO: Usar 25 para evitar el error de "out-of-range" de MUI que sale en tu consola
+  const [pageSize, setPageSize] = useState(25); 
+  const [search, setSearch] = useState("");
+  const [docSearch, setDocSearch] = useState("");
+
+  const [fSede, setFSede] = useState(() => {
+    return isSuperAdmin ? "" : String(currentUser?.idSede || "");
+  });
+  
+  const [fActivo, setFActivo] = useState("true");
+
+  const debouncedSearch = useDebounce(search, 500);
+  const debouncedDocSearch = useDebounce(docSearch, 500);
+
+  const [openImportHelp, setOpenImportHelp] = useState(false);
+  const [modal, setModal] = useState({ open: false, type: 'create', user: null });
+  const [formData, setFormData] = useState({
+    nombre: "", email: "", password: "", tipoDoc: "CC", numDoc: "", rol: "empleado", sede: "", activo: true
+  });
+  
+  const [resetModal, setResetModal] = useState({ open: false, user: null, newPass: "", show: false });
+
+  const { data, isLoading, refetch } = useUsuarios({
+    page: page + 1,
+    pageSize: pageSize,
+    search: debouncedSearch,
+    numeroDocumento: debouncedDocSearch,
+    idSede: isSuperAdmin ? fSede : currentUser?.idSede, 
+    activo: fActivo === "all" ? null : fActivo === "true"
+  });
+
+  const { data: sedesData } = useSedesAll();
+  const sedesList = useMemo(() => (Array.isArray(sedesData) ? sedesData : sedesData?.items || []), [sedesData]);
+
+  const { mutate: toggleStatus } = useUsuariosMutation();
+  const { mutate: eliminar } = useEliminarUsuario();
+  const { mutate: resetPassMutate, isLoading: isResetting } = useResetPassword();
+
+  useEffect(() => {
+    setPage(0);
+  }, [debouncedSearch, debouncedDocSearch, fSede, fActivo]);
+
+  const handleResetPassword = () => {
+    if (!resetModal.newPass || resetModal.newPass.length < 6) {
+      enqueueSnackbar("La contraseña debe tener al menos 6 caracteres", { variant: "warning" });
+      return;
+    }
+    resetPassMutate({ id: resetModal.user.id, password: resetModal.newPass }, {
+      onSuccess: () => setResetModal({ open: false, user: null, newPass: "", show: false })
+    });
+  };
+
+  const handleSave = async () => {
     try {
-      setExporting(true);
-
-      // Construir query params para el endpoint de Excel
-      const params = new URLSearchParams();
-      if (search.trim()) params.append("search", search.trim());
-      if (idSede) params.append("idSede", idSede);
-
-      // Llamar al endpoint de Excel con responseType blob
-      const response = await api.get(`/api/usuarios/exportar-excel?${params.toString()}`, {
-        responseType: 'blob'
-      });
-
-      // Crear enlace de descarga
-      const blob = new Blob([response.data], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      const today = new Date().toISOString().slice(0, 10);
-      a.href = url;
-      a.download = `Usuarios_${today}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-
-      enqueueSnackbar("Usuarios exportados a Excel", { variant: "success" });
-    } catch (e) {
-      console.error("Error exportando Excel:", e);
-      enqueueSnackbar(e?.response?.data?.message || e?.message || "No se pudo exportar el Excel", { variant: "error" });
-    } finally {
-      setExporting(false);
-    }
-  }
-
-  useEffect(() => {
-    if (isSuperAdmin) { 
-      setLoadingSedes(true);
-      getSedes({ page: 1, pageSize: 1000 })
-        .then((data) => setSedes(data?.items || []))
-        .catch(() => {
-          setSedes([]);
-          enqueueSnackbar("Error cargando sedes", { variant: "error" });
-        })
-        .finally(() => setLoadingSedes(false));
-    }
-  }, [isSuperAdmin, enqueueSnackbar]);
-
-  useEffect(() => {
-    if (user && !isSuperAdmin) {
-      setIdSede(String(user.idSede || ""));
-    }
-  }, [user, isSuperAdmin]);
-
-  const query = useMemo(() => {
-    const p = { page: page + 1, pageSize: rowsPerPage };
-    if (search.trim()) p.search = search.trim();
-    if (idSede) p.idSede = Number(idSede);
-    return p;
-  }, [page, rowsPerPage, search, idSede]);
-
-  function load() {
-    if (user?.rol === ROLES.ADMIN && !idSede) {
-      return; 
-    }
-    
-    setLoading(true);
-    setErr(null);
-    return getUsuarios(query)
-      .then((data) => {
-        if (data?.items) {
-          setData(data);
-        }
-      })
-      .catch((e) => {
-        console.error("Error cargando usuarios:", e);
-        setErr(e?.response?.data || e.message || "Error cargando usuarios");
-      })
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(() => {
-    load();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, user?.rol, idSede]); 
-
-  function openCreate() {
-    setFNombre("");
-    setFEmail("");
-    setFPassword("");
-    setFTipoDoc("CC");
-    setFNumDoc("");
-    setFRol("empleado"); 
-    setFSede(""); 
-    setOpenNew(true);
-  }
-
-  async function onCreate() {
-    try {
-      const payload = {
-        nombreCompleto: fNombre,
-        email: fEmail,
-        password: fPassword,
-        tipoDocumento: fTipoDoc,
-        numeroDocumento: fNumDoc,
-        rol: isSuperAdmin ? fRol : ROLES.EMPLEADO, 
-        idSede: isSuperAdmin ? Number(fSede) : user.idSede, 
-      };
-
-      if (!payload.nombreCompleto || !payload.email || !payload.password || !payload.idSede || !payload.numeroDocumento) {
-        enqueueSnackbar("Completa todos los campos obligatorios.", { variant: "warning" });
-        return;
+      if (modal.type === 'create') {
+        await crearUsuario({
+          nombreCompleto: formData.nombre,
+          email: formData.email,
+          password: formData.password,
+          tipoDocumento: formData.tipoDoc,
+          numeroDocumento: formData.numDoc,
+          rol: isSuperAdmin ? formData.rol : "empleado",
+          idSede: isSuperAdmin ? Number(formData.sede) : currentUser.idSede
+        });
+        enqueueSnackbar("Usuario creado", { variant: "success" });
+      } else {
+        await actualizarUsuario(modal.user.id, {
+          nombreCompleto: formData.nombre,
+          rol: formData.rol,
+          idSede: Number(formData.sede),
+          tipoDocumento: formData.tipoDoc,
+          numeroDocumento: formData.numDoc,
+          activo: formData.activo
+        });
+        enqueueSnackbar("Usuario actualizado", { variant: "success" });
       }
-      
-      await crearUsuario(payload);
-      setOpenNew(false);
-      load();
-      enqueueSnackbar("Usuario creado", { variant: "success" });
-    } catch (e) {
-      const msg = e?.response?.data || e.message || "Error al crear";
-      enqueueSnackbar(msg, { variant: "error" });
+      setModal({ open: false, type: 'create', user: null });
+      refetch();
+    } catch (err) {
+      enqueueSnackbar(err?.response?.data || "Error en la operación", { variant: "error" });
     }
-  }
+  };
 
-  function openEditDialog(u) {
-    setEditing(u);
-    setENombre(u.nombreCompleto);
-    setERol(u.rol);
-    setESede(String(u.idSede));
-    setEActivo(u.activo);
-    setETipoDoc(u.tipoDocumento || "CC");
-    setENumDoc(u.numeroDocumento || "");
-    setOpenEdit(true);
-  }
+  const handleFileChange = async (event, targetUser) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = async () => {
+        const canvas = document.createElement("canvas");
+        const MAX_SIZE = 800; 
+        let w = img.width, h = img.height;
+        if (w > h ? w > MAX_SIZE : h > MAX_SIZE) {
+          w > h ? (h *= MAX_SIZE / w, w = MAX_SIZE) : (w *= MAX_SIZE / h, h = MAX_SIZE);
+        }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        const base64 = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+        try {
+          await registrarFotoPerfil(base64, targetUser.id);
+          enqueueSnackbar(`Biometría de ${targetUser.nombreCompleto} actualizada`, { variant: "success" });
+          refetch();
+        } catch (err) { enqueueSnackbar("Error al procesar biometría", { variant: "error" }); }
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
 
-  async function onEditSave() {
-    try {
-      await actualizarUsuario(editing.id, {
-        nombreCompleto: eNombre,
-        rol: eRol,
-        idSede: Number(eSede),
-        tipoDocumento: eTipoDoc,
-        numeroDocumento: eNumDoc,
-        activo: eActivo,
+  useEffect(() => {
+    if (modal.type === 'edit' && modal.user) {
+      const u = modal.user;
+      setFormData({
+        nombre: u.nombreCompleto || "", email: u.email || "", password: "",
+        tipoDoc: u.tipoDocumento || "CC", numDoc: u.numeroDocumento || "",
+        rol: u.rol || "empleado", sede: u.idSede ? String(u.idSede) : "", activo: u.activo
       });
-      setOpenEdit(false);
-      load();
-      enqueueSnackbar("Usuario actualizado", { variant: "success" });
-    } catch (e) {
-      enqueueSnackbar(e?.response?.data || "Error al actualizar", { variant: "error" });
+    } else {
+      setFormData({ nombre: "", email: "", password: "", tipoDoc: "CC", numDoc: "", rol: "empleado", sede: "", activo: true });
     }
-  }
-
-  async function onToggle(u) {
-    try {
-      await cambiarEstadoUsuario(u.id, !u.activo);
-      load();
-    } catch (e) {
-      enqueueSnackbar(e?.response?.data || "Error al cambiar estado", { variant: "error" });
-    }
-  }
-
-  function handleOpenResetDialog(u) {
-    setPendingUser(u);
-    setNewPass("");
-    setShowPass(false);
-    setResetOpen(true);
-  }
-
-  async function onDelete(u) {
-    if (!confirm(`¿Eliminar al usuario ${u.nombreCompleto}?`)) return;
-    try {
-      setDeletingId(u.id);
-      await eliminarUsuario(u.id);
-      await load();
-      enqueueSnackbar("Usuario eliminado", { variant: "success" });
-    } catch (e) {
-      const msg = e?.response?.data || e.message || "Error al eliminar";
-      enqueueSnackbar(msg, { variant: "error" });
-    } finally {
-      setDeletingId(null);
-    }
-  }
-
-  function genPassword(len = 10) {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%";
-    let s = "";
-    for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
-    return s;
-  }
+  }, [modal]);
 
   return (
-    <>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
-        <Typography variant="h5" fontWeight={800}>
-          Usuarios
-        </Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={openCreate}>
-          Nuevo usuario
-        </Button>
+    <Box sx={{ p: 3, backgroundColor: "#f8f9fa", minHeight: "100vh" }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={3}>
+        <Typography variant="h4" fontWeight="bold">Usuarios</Typography>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Tooltip title="Guía de importación"><IconButton onClick={() => setOpenImportHelp(true)} color="info"><HelpOutlineIcon /></IconButton></Tooltip>
+          <Button variant="outlined" component="label" color="success" startIcon={<FileUploadIcon />}>
+            Importar Excel <input type="file" hidden accept=".xlsx, .xls" onChange={(e) => {
+                const file = e.target.files[0];
+                if(file) importarUsuarios(file).then(res => { enqueueSnackbar(res.mensaje, {variant: 'success'}); refetch(); }).catch(() => enqueueSnackbar("Error al importar", {variant: 'error'}));
+            }} />
+          </Button>
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setModal({ open: true, type: 'create', user: null })}>Nuevo Usuario</Button>
+        </Stack>
       </Stack>
 
-      <Paper sx={{ p: 2, mb: 2 }}>
-        <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems="center">
-          <TextField
-            label="Buscar (nombre o email)"
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setPage(0);
-            }}
-            sx={{ minWidth: 260 }}
-          />
+      <Paper sx={{ p: 2, mb: 3 }}>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
+          <TextField label="Nombre o Email" size="small" fullWidth value={search} onChange={(e) => setSearch(e.target.value)} />
+          <TextField label="Documento" size="small" fullWidth value={docSearch} onChange={(e) => setDocSearch(e.target.value)} />
           
-          {isSuperAdmin && (
-            <FormControl sx={{ minWidth: 200 }}>
-              <InputLabel id="sede-label">Sede</InputLabel>
-              <Select
-                labelId="sede-label"
-                label="Sede"
-                value={idSede}
-                disabled={loadingSedes || loading}
-                onChange={(e) => {
-                  setIdSede(e.target.value);
-                  setPage(0);
-                }}
-              >
-                <MenuItem value="">Todas</MenuItem>
-                {sedes.map((s) => (
-                  <MenuItem key={s.id} value={String(s.id)}>
-                    {s.nombre}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
+          <FormControl fullWidth size="small">
+            <InputLabel>Sede</InputLabel>
+            <Select 
+              value={fSede} 
+              onChange={(e) => setFSede(e.target.value)} 
+              label="Sede"
+              disabled={!isSuperAdmin}
+            >
+              {isSuperAdmin ? (
+                [<MenuItem key="all" value="">Sedes (Todas)</MenuItem>,
+                ...sedesList.map(s => <MenuItem key={s.id} value={String(s.id)}>{s.nombre}</MenuItem>)]
+              ) : (
+                <MenuItem value={String(currentUser?.idSede)}>{currentUser?.nombreSede || "Mi Sede"}</MenuItem>
+              )}
+            </Select>
+          </FormControl>
 
-          <Box sx={{ flexGrow: 1 }} />
-          {/* ✅ CAMBIO: Ahora exporta Excel */}
-          <Button
-            variant="contained"
-            color="success"
-            startIcon={exporting ? <CircularProgress size={20} color="inherit" /> : <FileDownloadIcon />}
-            onClick={exportExcel}
-            disabled={exporting || loading}
-            sx={{ minWidth: 140 }}
-          >
-            {exporting ? "Exportando..." : "Exportar Excel"}
-          </Button>
-          <IconButton onClick={load} disabled={loading}>
-            <ReplayIcon />
-          </IconButton>
+          <Select value={fActivo} onChange={(e) => setFActivo(e.target.value)} size="small" fullWidth>
+            <MenuItem value="true">Activos</MenuItem>
+            <MenuItem value="false">Inactivos</MenuItem>
+          </Select>
+          <IconButton onClick={() => refetch()} color="primary"><RefreshIcon /></IconButton>
         </Stack>
       </Paper>
 
-      <Paper elevation={3}>
-        {err && <Alert severity="error">{String(err)}</Alert>}
-        {loading ? (
-          <Box sx={{ display: "grid", placeItems: "center", py: 4 }}>
-            <CircularProgress />
-          </Box>
-        ) : (
-          <>
-            <TableContainer>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>ID</TableCell>
-                    <TableCell>Nombre</TableCell>
-                    <TableCell>Email</TableCell>
-                    <TableCell>Tipo Doc.</TableCell>
-                    <TableCell>No. Documento</TableCell>
-                    <TableCell>Rol</TableCell>
-                    <TableCell>Sede</TableCell>
-                    <TableCell>Estado</TableCell>
-                    <TableCell align="right">Acciones</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {data.items.map((u) => (
-                    <TableRow key={u.id} hover>
-                      <TableCell>{u.id}</TableCell>
-                      <TableCell>{u.nombreCompleto}</TableCell>
-                      <TableCell>{u.email}</TableCell>
-                      <TableCell>{u.tipoDocumento || "-"}</TableCell>
-                      <TableCell>{u.numeroDocumento || "-"}</TableCell>
-                      <TableCell>
-                        <Chip
-                          size="small"
-                          label={u.rol}
-                          color={(u.rol === "admin" || u.rol === "superadmin") ? "secondary" : "default"}
-                        />
-                      </TableCell>
-                      <TableCell>{u.sedeNombre ?? u.idSede}</TableCell>
-                      <TableCell>
-                        <Chip
-                          size="small"
-                          label={u.activo ? "Activo" : "Inactivo"}
-                          color={u.activo ? "success" : "default"}
-                        />
-                      </TableCell>
-                      <TableCell align="right">
-                        <IconButton size="small" onClick={() => openEditDialog(u)}>
-                          <EditIcon />
-                        </IconButton>
-                        <IconButton size="small" onClick={() => onToggle(u)}>
-                          {u.activo ? <BlockIcon /> : <CheckCircleIcon />}
-                        </IconButton>
-                        <Tooltip title="Resetear contraseña">
-                          <IconButton
-                            size="small"
-                            color="warning"
-                            onClick={() => handleOpenResetDialog(u)}
-                          >
-                            <KeyIcon />
-                          </IconButton>
-                        </Tooltip>
-                        <IconButton
-                          size="small"
-                          color="error"
-                          onClick={() => onDelete(u)}
-                          disabled={deletingId === u.id}
-                        >
-                          <DeleteForeverIcon />
-                        </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {data.items.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={9} align="center" sx={{ py: 4, color: "text.secondary" }}>
-                        No hay usuarios.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-            <TablePagination
-              component="div"
-              count={data.total}
-              page={page}
-              onPageChange={(_, p) => setPage(p)}
-              rowsPerPage={rowsPerPage}
-              onRowsPerPageChange={(e) => {
-                setRowsPerPage(parseInt(e.target.value, 10));
-                setPage(0);
-              }}
-              rowsPerPageOptions={[5, 10, 20, 50]}
-              labelRowsPerPage="Filas por página"
-            />
-          </>
-        )}
-      </Paper>
+      <TableContainer component={Paper}>
+        <Table stickyHeader size="small">
+          <TableHead>
+            <TableRow sx={{ backgroundColor: "#f0f2f5" }}>
+              <TableCell><strong>Nombre y Email</strong></TableCell>
+              <TableCell><strong>Documento</strong></TableCell>
+              <TableCell><strong>Sede</strong></TableCell>
+              <TableCell><strong>Rol</strong></TableCell> 
+              <TableCell><strong>Estado</strong></TableCell>
+              <TableCell align="right"><strong>Acciones</strong></TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {isLoading ? (
+              <TableRow><TableCell colSpan={6} align="center" sx={{ py: 5 }}><CircularProgress size={30} /></TableCell></TableRow>
+            ) : data?.items.length === 0 ? (
+              <TableRow><TableCell colSpan={6} align="center" sx={{ py: 3 }}>No se encontraron usuarios</TableCell></TableRow>
+            ) : (
+              data?.items.map((u) => (
+                <TableRow key={u.id} hover>
+                  <TableCell>
+                    <Typography variant="body2" fontWeight="medium">{u.nombreCompleto}</Typography>
+                    <Typography variant="caption" color="textSecondary">{u.email}</Typography>
+                  </TableCell>
+                  <TableCell>{u.tipoDocumento} {u.numeroDocumento}</TableCell>
+                  <TableCell>{u.sedeNombre}</TableCell>
+                  <TableCell><Chip label={u.rol?.toUpperCase()} size="small" variant="outlined" color={u.rol === "superadmin" ? "secondary" : u.rol === "admin" ? "primary" : "default"} /></TableCell>
+                  <TableCell><Chip label={u.activo ? "Activo" : "Inactivo"} color={u.activo ? "success" : "default"} size="small" onClick={() => toggleStatus({ id: u.id, activo: !u.activo })} sx={{ cursor: 'pointer' }} /></TableCell>
+                  <TableCell align="right">
+                    <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                      <IconButton component="label" size="small" color="primary"><PhotoIcon fontSize="small" /><input type="file" hidden accept="image/*" onChange={(e) => handleFileChange(e, u)} /></IconButton>
+                      <IconButton size="small" color="info" onClick={() => setModal({ open: true, type: 'edit', user: u })}><EditIcon fontSize="small"/></IconButton>
+                      <IconButton size="small" color="warning" onClick={() => setResetModal({ open: true, user: u, newPass: "", show: false })}><KeyIcon fontSize="small"/></IconButton>
+                      <IconButton size="small" color="error" onClick={() => { if(window.confirm('¿Eliminar usuario?')) eliminar(u.id); }}><DeleteIcon fontSize="small"/></IconButton>
+                    </Stack>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+        <TablePagination
+          component="div"
+          count={data?.total || 0}
+          page={page}
+          onPageChange={(_, newPage) => setPage(newPage)}
+          rowsPerPage={pageSize}
+          // ✅ Las opciones deben incluir el valor de pageSize (25)
+          rowsPerPageOptions={[10, 25, 50, 100]} 
+          onRowsPerPageChange={(e) => { setPageSize(parseInt(e.target.value, 10)); setPage(0); }}
+          labelRowsPerPage="Filas por página"
+        />
+      </TableContainer>
 
-      <Dialog open={openNew} onClose={() => setOpenNew(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Nuevo usuario</DialogTitle>
+      {/* MODAL RESET PASSWORD */}
+      <Dialog open={resetModal.open} onClose={() => setResetModal({ ...resetModal, open: false })}>
+        <DialogTitle>Restablecer Contraseña</DialogTitle>
+        <DialogContent>
+           <Typography variant="body2" sx={{ mb: 2 }}>Usuario: {resetModal.user?.nombreCompleto}</Typography>
+          <Box sx={{ mt: 1, minWidth: 300 }}>
+            <TextField fullWidth label="Nueva Contraseña" type={resetModal.show ? "text" : "password"} value={resetModal.newPass} onChange={(e) => setResetModal({ ...resetModal, newPass: e.target.value })}
+              InputProps={{ endAdornment: (<InputAdornment position="end"><IconButton onClick={() => setResetModal({ ...resetModal, show: !resetModal.show })}>{resetModal.show ? <VisibilityOffIcon /> : <VisibilityIcon />}</IconButton></InputAdornment>), }}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions><Button onClick={() => setResetModal({ ...resetModal, open: false })}>Cancelar</Button><Button variant="contained" color="warning" onClick={handleResetPassword} disabled={isResetting}>Confirmar Cambio</Button></DialogActions>
+      </Dialog>
+
+      {/* MODAL CREAR/EDITAR */}
+      <Dialog open={modal.open} onClose={() => setModal({ ...modal, open: false })} maxWidth="sm" fullWidth>
+        <DialogTitle>{modal.type === 'create' ? 'Nuevo Usuario' : 'Editar Usuario'}</DialogTitle>
         <DialogContent dividers>
-          <Grid container spacing={2} sx={{ mt: 0.5 }}>
-            <Grid item xs={6}>
-              <FormControl fullWidth>
-                <InputLabel id="tipo-doc-label">Tipo Doc</InputLabel>
-                <Select
-                  labelId="tipo-doc-label"
-                  label="Tipo Doc"
-                  value={fTipoDoc}
-                  onChange={(e) => setFTipoDoc(e.target.value)}
-                >
-                  <MenuItem value="CC">Cédula de Ciudadanía</MenuItem>
-                  <MenuItem value="CE">Cédula de Extranjería</MenuItem>
-                  <MenuItem value="TI">Tarjeta de Identidad</MenuItem>
-                  <MenuItem value="PAS">Pasaporte</MenuItem>
-                  <MenuItem value="PEP">PEP</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={6}>
-              <TextField 
-                label="No. Documento" 
-                fullWidth 
-                value={fNumDoc} 
-                onChange={(e) => setFNumDoc(e.target.value)} 
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                label="Nombre completo"
-                fullWidth
-                value={fNombre}
-                onChange={(e) => setFNombre(e.target.value)}
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                label="Email"
-                fullWidth
-                value={fEmail}
-                onChange={(e) => setFEmail(e.target.value)}
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                label="Password"
-                type="password"
-                fullWidth
-                value={fPassword}
-                onChange={(e) => setFPassword(e.target.value)}
-              />
-            </Grid>
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid item xs={4}><FormControl fullWidth size="small"><InputLabel>Tipo Doc</InputLabel><Select value={formData.tipoDoc} label="Tipo Doc" onChange={(e) => setFormData({...formData, tipoDoc: e.target.value})}><MenuItem value="CC">Cédula</MenuItem><MenuItem value="CE">Extranjería</MenuItem></Select></FormControl></Grid>
+            <Grid item xs={8}><TextField label="Documento" fullWidth size="small" value={formData.numDoc} onChange={(e) => setFormData({...formData, numDoc: e.target.value})} /></Grid>
+            <Grid item xs={12}><TextField label="Nombre Completo" fullWidth size="small" value={formData.nombre} onChange={(e) => setFormData({...formData, nombre: e.target.value})} /></Grid>
+            {modal.type === 'create' && (<><Grid item xs={12}><TextField label="Email" fullWidth size="small" value={formData.email} onChange={(e) => setFormData({...formData, email: e.target.value})} /></Grid><Grid item xs={12}><TextField label="Contraseña" type="password" fullWidth size="small" value={formData.password} onChange={(e) => setFormData({...formData, password: e.target.value})} /></Grid></>)}
             {isSuperAdmin && (
               <>
-                <Grid item xs={6}>
-                  <FormControl fullWidth>
-                    <InputLabel id="rol-n">Rol</InputLabel>
-                    <Select
-                      labelId="rol-n"
-                      label="Rol"
-                      value={fRol}
-                      onChange={(e) => setFRol(e.target.value)}
-                    >
-                      <MenuItem value="empleado">Empleado</MenuItem>
-                      <MenuItem value="admin">Admin</MenuItem>
-                      <MenuItem value="superadmin">SuperAdmin</MenuItem> 
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid item xs={6}>
-                  <FormControl fullWidth>
-                    <InputLabel id="sede-n">Sede</InputLabel>
-                    <Select
-                      labelId="sede-n"
-                      label="Sede"
-                      value={fSede}
-                      onChange={(e) => setFSede(e.target.value)}
-                    >
-                      {sedes.map((s) => (
-                        <MenuItem key={s.id} value={String(s.id)}>
-                          {s.nombre}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
+                <Grid item xs={6}><FormControl fullWidth size="small"><InputLabel>Sede</InputLabel><Select value={formData.sede} label="Sede" onChange={(e) => setFormData({...formData, sede: e.target.value})}>{sedesList.map(s => <MenuItem key={s.id} value={String(s.id)}>{s.nombre}</MenuItem>)}</Select></FormControl></Grid>
+                <Grid item xs={6}><FormControl fullWidth size="small"><InputLabel>Rol</InputLabel><Select value={formData.rol} label="Rol" onChange={(e) => setFormData({...formData, rol: e.target.value})}><MenuItem value="empleado">Empleado</MenuItem><MenuItem value="admin">Admin</MenuItem><MenuItem value="superadmin">SuperAdmin</MenuItem></Select></FormControl></Grid>
               </>
+            )}
+            {/* ✅ AQUÍ ESTABA EL ERROR: FormControlLabel y Switch ahora funcionarán */}
+            {modal.type === 'edit' && (
+               <Grid item xs={12}>
+                 <FormControlLabel
+                   control={<Switch checked={formData.activo} onChange={(e) => setFormData({...formData, activo: e.target.checked})} />}
+                   label="Usuario Activo"
+                 />
+               </Grid>
             )}
           </Grid>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setOpenNew(false)}>Cancelar</Button>
-          <Button variant="contained" onClick={onCreate}>
-            Crear
-          </Button>
-        </DialogActions>
+        <DialogActions><Button onClick={() => setModal({ ...modal, open: false })}>Cancelar</Button><Button variant="contained" onClick={handleSave}>Guardar</Button></DialogActions>
       </Dialog>
-
-      <Dialog open={openEdit} onClose={() => setOpenEdit(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Editar usuario</DialogTitle>
-        <DialogContent dividers>
-          <Grid container spacing={2} sx={{ mt: 0.5 }}>
-            <Grid item xs={6}>
-              <FormControl fullWidth>
-                <InputLabel id="tipo-doc-e">Tipo Doc</InputLabel>
-                <Select
-                  labelId="tipo-doc-e"
-                  label="Tipo Doc"
-                  value={eTipoDoc}
-                  onChange={(e) => setETipoDoc(e.target.value)}
-                >
-                  <MenuItem value="CC">Cédula de Ciudadanía</MenuItem>
-                  <MenuItem value="CE">Cédula de Extranjería</MenuItem>
-                  <MenuItem value="TI">Tarjeta de Identidad</MenuItem>
-                  <MenuItem value="PAS">Pasaporte</MenuItem>
-                  <MenuItem value="PEP">PEP</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={6}>
-              <TextField 
-                label="No. Documento" 
-                fullWidth 
-                value={eNumDoc} 
-                onChange={(e) => setENumDoc(e.target.value)} 
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                label="Nombre completo"
-                fullWidth
-                value={eNombre}
-                onChange={(e) => setENombre(e.target.value)}
-              />
-            </Grid>
-            <Grid item xs={6}>
-              <FormControl fullWidth>
-                <InputLabel id="rol-e">Rol</InputLabel>
-                <Select
-                  labelId="rol-e"
-                  label="Rol"
-                  value={eRol}
-                  onChange={(e) => setERol(e.target.value)}
-                  disabled={!isSuperAdmin} 
-                >
-                  <MenuItem value="empleado">Empleado</MenuItem>
-                  <MenuItem value="admin">Admin</MenuItem>
-                  <MenuItem value="superadmin">SuperAdmin</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={6}>
-              <FormControl fullWidth>
-                <InputLabel id="sede-e">Sede</InputLabel>
-                <Select
-                  labelId="sede-e"
-                  label="Sede"
-                  value={eSede}
-                  onChange={(e) => setESede(e.target.value)}
-                  disabled={!isSuperAdmin} 
-                >
-                  {sedes.map((s) => (
-                    <MenuItem key={s.id} value={String(s.id)}>
-                      {s.nombre}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={12}>
-              <FormControl fullWidth>
-                <InputLabel id="estado-e">Estado</InputLabel>
-                <Select
-                  labelId="estado-e"
-                  label="Estado"
-                  value={eActivo ? "1" : "0"}
-                  onChange={(e) => setEActivo(e.target.value === "1")}
-                >
-                  <MenuItem value="1">Activo</MenuItem>
-                  <MenuItem value="0">Inactivo</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setOpenEdit(false)}>Cancelar</Button>
-          <Button variant="contained" onClick={onEditSave}>
-            Guardar
-          </Button>
-        </DialogActions>
-      </Dialog>
-      
-      <Dialog open={resetOpen} onClose={() => setResetOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Resetear contraseña</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" sx={{ mb: 2 }}>
-            Usuario: <strong>{pendingUser?.nombreCompleto}</strong> ({pendingUser?.email})
-          </Typography>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems="center" sx={{ mb: 1 }}>
-            <TextField
-              fullWidth
-              label="Nueva contraseña"
-              value={newPass}
-              onChange={(e) => setNewPass(e.target.value)}
-              type={showPass ? "text" : "password"}
-              inputProps={{ minLength: 6 }}
-              helperText="Mínimo 6 caracteres"
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton onClick={() => setShowPass((s) => !s)} edge="end">
-                      {showPass ? <VisibilityOffIcon /> : <VisibilityIcon />}
-                    </IconButton>
-                  </InputAdornment>
-                ),
-              }}
-            />
-            <Button
-              variant="outlined"
-              onClick={() => setNewPass(genPassword())}
-              sx={{ whiteSpace: "nowrap" }}
-            >
-              Generar
-            </Button>
-          </Stack>
-          <Typography variant="caption" color="text.secondary">
-            Confirma para establecer la nueva contraseña del usuario.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setResetOpen(false)}>Cancelar</Button>
-          <Button
-            variant="contained"
-            color="warning"
-            disabled={resetting || newPass.length < 6}
-            onClick={async () => {
-              try {
-                setResetting(true);
-                await resetPassword(pendingUser.id, newPass); 
-                enqueueSnackbar("Contraseña reestablecida", { variant: "success" });
-                setResetOpen(false);
-                setPendingUser(null);
-                setNewPass("");
-              } catch (e) {
-                enqueueSnackbar(
-                  e?.response?.data || e.message || "Error al resetear",
-                  { variant: "error" }
-                );
-              } finally {
-                setResetting(false);
-              }
-            }}
-          >
-            {resetting ? "Procesando..." : "Resetear ahora"}
-          </Button>
-        </DialogActions>
-      </Dialog>
-    </>
+    </Box>
   );
-}
+};
+
+export default Usuarios;

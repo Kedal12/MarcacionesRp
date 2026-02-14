@@ -1,15 +1,15 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace MarcacionAPI.DTOs;
 
 public class MarcacionDto
 {
-    [Required]
-    public string Tipo { get; set; } = string.Empty; // "entrada" | "salida"
+	[Required]
+	public string Tipo { get; set; } = string.Empty;
 
-    [Range(-90, 90)]
-    public decimal Latitud { get; set; }
+	[Range(-90, 90)]
+	public decimal Latitud { get; set; }
 
-    [Range(-180, 180)]
-    public decimal Longitud { get; set; }
+	[Range(-180, 180)]
+	public decimal Longitud { get; set; }
 }
